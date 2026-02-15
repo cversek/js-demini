@@ -1,0 +1,26 @@
+{
+  "name": "demini",
+  "version": "0.1.0",
+  "description": "JavaScript bundle reverse engineering toolkit — de-minify, annotate, split",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "bin": {
+    "demini-beautify": "./demini-beautify.js",
+    "demini-annotate": "./demini-annotate.js"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["reverse-engineering", "javascript", "esbuild", "webpack", "deminify", "bundle"],
+  "author": "cversek",
+  "license": "MIT",
+  "dependencies": {
+    "acorn": "^8.15.0",
+    "acorn-walk": "^8.3.4",
+    "astring": "^1.9.0",
+    "better-sqlite3": "^12.6.2",
+    "prettier": "^3.5.3"
+  }
+}
