@@ -1,0 +1,6 @@
+# Dependencies (like venv/ in Python — never committed, regenerated via `npm install`)
+node_modules/
+
+# OS junk
+.DS_Store
+Thumbs.db
