@@ -7,6 +7,7 @@
     "node": ">=18.0.0"
   },
   "bin": {
+    "demini": "./demini.js",
     "demini-beautify": "./demini-beautify.js",
     "demini-annotate": "./demini-annotate.js"
   },
