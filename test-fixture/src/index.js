@@ -1,18 +1,27 @@
 /**
- * demini Test Fixture — Entry Point
+ * demini Test Fixture — Entry Point (Mixed CJS+ESM)
  *
- * Exercises all modules, producing deterministic-structure output
- * (with stochastic values from Monte Carlo). This output serves as
- * the behavioral equivalence check: source and bundle must match.
+ * Imports both CJS (.cjs) and ESM (.js) modules. When bundled with
+ * esbuild --format=esm, CJS modules get __commonJS wrappers (R()),
+ * ESM modules get __esm wrappers (v()). This mixed architecture
+ * mirrors real-world large-scale esbuild bundles.
  */
 
+// --- CJS modules (→ R() factories in bundle) ---
+import constants from "./constants.cjs";
+const { GREETING, VERSION, LogLevel, DEFAULT_CONFIG, GOLDEN_RATIO } = constants;
+
+import stringUtils from "./string-utils.cjs";
+const { titleCase, wordFrequency, formatSummary, isValidEmail } = stringUtils;
+
+import dataTransforms from "./data-transforms.cjs";
+const { leaderboard, groupBy, safeExtract, computeStats, mergeConfigs } = dataTransforms;
+
+// --- ESM modules (→ v() factories or inlined in bundle) ---
 import { throwDarts, estimatePi, multiTrialEstimate, PI_REFERENCE } from "./pi-monte-carlo.js";
 import { renderDartboard, renderHistogram } from "./visualization.js";
-import { titleCase, wordFrequency, formatSummary, isValidEmail } from "./string-utils.js";
 import { simulateFetch, fetchAll, fibonacci } from "./async-patterns.js";
 import { Circle, Rectangle, createShapeReport, Shape } from "./class-hierarchy.js";
-import { leaderboard, groupBy, safeExtract, computeStats, mergeConfigs } from "./data-transforms.js";
-import { GREETING, VERSION, LogLevel, DEFAULT_CONFIG, GOLDEN_RATIO } from "./constants.js";
 
 async function main() {
   console.log(`${GREETING} v${VERSION}\n`);
@@ -96,6 +105,7 @@ async function main() {
   console.log(`  LogLevel.WARN = ${LogLevel.WARN}`);
   console.log(`  Golden ratio: ${GOLDEN_RATIO}`);
   console.log(`  Pi reference: ${PI_REFERENCE}`);
+  console.log(`  Default timeout: ${constants.DEFAULT_TIMEOUT}ms`);
 
   console.log("\nDone.");
 }

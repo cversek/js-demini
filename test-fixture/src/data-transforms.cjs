@@ -1,8 +1,8 @@
 /**
- * Data Transforms — Array Methods, Destructuring, Spread, Modern Syntax
+ * Data Transforms — Array Methods, Destructuring, Spread, Modern Syntax (CJS)
  *
- * Tests: map/filter/reduce, destructuring, spread operator,
- * optional chaining (?.), nullish coalescing (??), computed properties.
+ * CommonJS version: uses require/module.exports pattern.
+ * esbuild wraps this with __commonJS (minified to R()) when bundling to ESM.
  */
 
 /**
@@ -10,7 +10,7 @@
  * @param {Array<{ name: string, score: number }>} entries
  * @returns {Array<{ rank: number, name: string, score: number }>}
  */
-export function leaderboard(entries) {
+function leaderboard(entries) {
   return [...entries]
     .sort((a, b) => b.score - a.score)
     .map(({ name, score }, idx) => ({ rank: idx + 1, name, score }));
@@ -23,7 +23,7 @@ export function leaderboard(entries) {
  * @param {(item: T) => string} keyFn
  * @returns {Record<string, T[]>}
  */
-export function groupBy(items, keyFn) {
+function groupBy(items, keyFn) {
   return items.reduce((groups, item) => {
     const key = keyFn(item);
     return { ...groups, [key]: [...(groups[key] ?? []), item] };
@@ -36,7 +36,7 @@ export function groupBy(items, keyFn) {
  * @param {string} fallback
  * @returns {string}
  */
-export function safeExtract(obj, fallback = "unknown") {
+function safeExtract(obj, fallback = "unknown") {
   return obj?.data?.nested?.value ?? fallback;
 }
 
@@ -45,17 +45,16 @@ export function safeExtract(obj, fallback = "unknown") {
  * @param  {...object} configs
  * @returns {object}
  */
-export function mergeConfigs(...configs) {
+function mergeConfigs(...configs) {
   return configs.reduce((merged, cfg) => ({ ...merged, ...cfg }), {});
 }
 
 /**
  * Compute statistics from an array of numbers.
- * Tests: destructuring in parameters, reduce with object accumulator.
  * @param {number[]} numbers
  * @returns {{ min: number, max: number, mean: number, sum: number, count: number }}
  */
-export function computeStats(numbers) {
+function computeStats(numbers) {
   if (numbers.length === 0) {
     return { min: 0, max: 0, mean: 0, sum: 0, count: 0 };
   }
@@ -74,13 +73,21 @@ export function computeStats(numbers) {
 
 /**
  * Create an object with computed property names.
- * Tests: [expression]: value syntax.
  * @param {string} prefix
  * @param {string[]} keys
  * @returns {object}
  */
-export function computedProperties(prefix, keys) {
+function computedProperties(prefix, keys) {
   return Object.fromEntries(
     keys.map((key, i) => [`${prefix}_${key}`, i + 1])
   );
 }
+
+module.exports = {
+  leaderboard,
+  groupBy,
+  safeExtract,
+  mergeConfigs,
+  computeStats,
+  computedProperties,
+};
