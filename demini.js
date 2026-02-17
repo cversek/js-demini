@@ -2,7 +2,7 @@
 /**
  * demini — Pipeline runner for the demini JS reverse engineering toolkit
  *
- * Orchestrates the full demini pipeline: beautify → annotate → (future stages).
+ * Orchestrates the full demini pipeline: beautify → classify → (future stages).
  * Each stage runs as a child process, chaining outputs automatically.
  *
  * Usage:
@@ -21,13 +21,13 @@
  *
  * Output:
  *   DEMINI_NN/00_beautified-{name}.js     (Stage 00)
- *   DEMINI_NN/01_annotated-{name}.js      (Stage 01)
+ *   DEMINI_NN/01_classified-{name}.js     (Stage 01)
  *   DEMINI_NN/01_stats-{name}.json        (Stage 01 sidecar)
  *   DEMINI_NN/run.json                    (provenance for all stages)
  *
  * Python analogy:
  *   Think of `demini` as like a `tox` or `nox` runner — it orchestrates
- *   individual tools (demini-beautify, demini-annotate) in sequence,
+ *   individual tools (demini-beautify, demini-classify) in sequence,
  *   similar to how tox runs linters then tests then type-checkers.
  *   Each tool works standalone, but the runner chains them.
  */
@@ -52,9 +52,9 @@ const STAGES = [
   },
   {
     id: "01",
-    name: "annotate",
-    script: path.join(__dirname, "demini-annotate.js"),
-    outputPrefix: "01_annotated-",
+    name: "classify",
+    script: path.join(__dirname, "demini-classify.js"),
+    outputPrefix: "01_classified-",
   },
 ];
 
@@ -128,7 +128,7 @@ Options:
 
 Stages:
   00  beautify    Format minified code with prettier
-  01  annotate    Add AST annotation comments for analysis
+  01  classify    Structural profiling with AST classification comments
 
 Examples:
   demini bundle.js                    # Full pipeline, output next to input
@@ -323,7 +323,7 @@ function main() {
         const name = s.tool || "unknown";
         const elapsed = s.elapsed_ms || 0;
         const outFile = s.results?.output_file || "?";
-        const outSize = s.results?.annotated_bytes || s.results?.beautified_bytes || "?";
+        const outSize = s.results?.classified_bytes || s.results?.beautified_bytes || "?";
         console.log(`    ${s.stage}: ${name} → ${outFile} (${fmtTime(elapsed)}, ${typeof outSize === "number" ? (outSize / 1024).toFixed(1) + " KB" : outSize})`);
       }
     }

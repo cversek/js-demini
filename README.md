@@ -6,22 +6,24 @@ A pipeline for taking apart JavaScript bundles, one careful cut at a time.
 
 Modern JS tools (esbuild, webpack, rollup) pack hundreds of source files into a single monolithic bundle. `demini` reverses that process — not by guessing at the original structure, but through a series of verified, behavioral-equivalent transformations where every intermediate file still runs.
 
-Each stage marks the code up a little more, understands it a little better, and keeps it working the whole time.
+Each stage asks a deeper question about the code and keeps it working the whole time.
 
 ## The pipeline
 
 ```
-cli.js                          the raw bundle, minified
-  ↓ demini-beautify
-00_DEMINI_beautified-cli.js     readable, same behavior
-  ↓ demini-annotate
-01_DEMINI_annotated-cli.js      boundary markers, same behavior
-  ↓ demini-split
-02_DEMINI_split-cli/            separate files, reassemblable
-  ↓ demini-constants
-03_DEMINI_constants-cli/        magic numbers → named constants
-  ↓ demini-rename
-04_DEMINI_renamed-cli/          obfuscated names → semantic names
+bundle.js                       the raw bundle, minified
+  |  demini-beautify
+00_beautified-bundle.js         readable, same behavior
+  |  demini-classify
+01_classified-bundle.js         boundary markers + structural profile
+  |  demini-trace
+02_trace-bundle.json            inter-module dependency graph
+  |  demini-split
+03_split-bundle/                separate files, reassemblable
+  |  demini-annotate
+04_annotated-bundle/            per-module semantic annotations
+  |  demini-rename
+05_renamed-bundle/              obfuscated names -> semantic names
 ```
 
 Every stage produces files you can `node` directly. Nothing breaks along the way.
@@ -36,15 +38,15 @@ Wraps prettier with shebang preservation. Stage 00 — make it readable first.
 node demini-beautify.js <input.js> [output-dir]
 ```
 
-### `demini-annotate`
+### `demini-classify`
 
-Parses the AST and inserts machine-readable boundary comments before every top-level statement. The output is simultaneously executable code and an analysis document.
+Parses the AST and inserts machine-readable boundary comments before every top-level statement. The output is simultaneously executable code and an analysis document. Detects bundler type (esbuild, webpack, etc.) and produces a structural profile.
 
 ```
-node demini-annotate.js <input.js> [output-dir]
+node demini-classify.js <input.js> [output-dir]
 ```
 
-Produces `DEMINI_stats.json` alongside the annotated source — a full classification of what's in the bundle:
+Produces a stats JSON sidecar alongside the classified source — a full structural profile of what's in the bundle:
 
 ```
 MODULE_FACTORY_R      2283 stmts (53.7% of bytes)   lazy module factories
@@ -55,7 +57,7 @@ VAR_DECL              2406 stmts  (2.7% of bytes)   variable declarations
 IMPORT                 596 stmts  (0.2% of bytes)   import statements
 ```
 
-Annotation format (parseable by regex for downstream tools):
+Classification comment format (parseable by regex for downstream tools):
 ```javascript
 /* === [0042] TYPE: FUNCTION_DECL | NAME: hIq | LINES: 120-132 | BYTES: 216 === */
 function hIq(A, q) {
@@ -65,15 +67,16 @@ function hIq(A, q) {
 
 ### Future stages
 
-- **demini-split** — use annotation boundaries to carve the bundle into separate module files
-- **demini-constants** — extract repeated magic numbers and long strings into named constants
-- **demini-rename** — apply semantic name mappings (from manual analysis or heuristics) to replace obfuscated identifiers
+- **demini-trace** — map inter-module dependencies via factory variable cross-references
+- **demini-split** — use classification boundaries to carve the bundle into separate module files
+- **demini-annotate** — add per-module semantic annotations (function boundaries, exports, string catalogs)
+- **demini-rename** — apply semantic name mappings (from analysis, heuristics, or LLM-assisted naming) to replace obfuscated identifiers
 
 ## Design principles
 
-**Behavioral equivalence at every stage.** If `node bundle.js --version` works, then `node 01_DEMINI_annotated-bundle.js --version` works too. Always.
+**Behavioral equivalence at every stage.** If `node bundle.js --version` works, then `node 01_classified-bundle.js --version` works too. Always.
 
-**Mark the cuts before cutting.** Annotation precedes splitting. Understand the structure before you change it.
+**Classify before cutting.** Structural profiling precedes splitting. Understand the structure before you change it.
 
 **Generic over specific.** Tools accept any JS file as input. They happen to understand esbuild's `R()` factory pattern, but they work on webpack, rollup, or hand-written bundles too.
 
