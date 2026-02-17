@@ -1,8 +1,8 @@
 /**
- * String Utilities — Template Literals, Regex, Tagged Templates
+ * String Utilities — Template Literals, Regex, Tagged Templates (CJS)
  *
- * Tests: template literal preservation, regex patterns,
- * tagged template functions, string method chains.
+ * CommonJS version: uses require/module.exports pattern.
+ * esbuild wraps this with __commonJS (minified to R()) when bundling to ESM.
  */
 
 const WORD_SEPARATOR = /[\s,;:!?.]+/;
@@ -11,7 +11,7 @@ const EMAIL_PATTERN = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
 /**
  * Tagged template that highlights interpolated values with brackets.
  */
-export function highlight(strings, ...values) {
+function highlight(strings, ...values) {
   return strings.reduce((result, str, i) => {
     const val = i < values.length ? `[${values[i]}]` : "";
     return result + str + val;
@@ -23,7 +23,7 @@ export function highlight(strings, ...values) {
  * @param {string} input
  * @returns {string}
  */
-export function titleCase(input) {
+function titleCase(input) {
   return input
     .split(WORD_SEPARATOR)
     .filter((w) => w.length > 0)
@@ -36,7 +36,7 @@ export function titleCase(input) {
  * @param {string} text
  * @returns {Map<string, number>}
  */
-export function wordFrequency(text) {
+function wordFrequency(text) {
   const words = text.toLowerCase().split(WORD_SEPARATOR).filter(Boolean);
   const freq = new Map();
   for (const word of words) {
@@ -50,15 +50,23 @@ export function wordFrequency(text) {
  * @param {string} email
  * @returns {boolean}
  */
-export function isValidEmail(email) {
+function isValidEmail(email) {
   return EMAIL_PATTERN.test(email);
 }
 
 /**
  * Format a result summary using template literals.
  */
-export function formatSummary(name, value, unit) {
+function formatSummary(name, value, unit) {
   return highlight`Result: ${name} = ${value} ${unit}`;
 }
 
-export { WORD_SEPARATOR, EMAIL_PATTERN };
+module.exports = {
+  highlight,
+  titleCase,
+  wordFrequency,
+  isValidEmail,
+  formatSummary,
+  WORD_SEPARATOR,
+  EMAIL_PATTERN,
+};

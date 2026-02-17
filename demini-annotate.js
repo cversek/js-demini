@@ -106,21 +106,117 @@ const ast = acorn.parse(code, acornSettings);
 const parseElapsed = Date.now() - parseStart;
 console.log(`Parse time: ${parseElapsed}ms`);
 console.log(`Top-level statements: ${ast.body.length}`);
+
+// Detect esbuild runtime helpers by pattern matching
+const runtimeHelpers = detectRuntimeHelpers(ast, code);
+const helperCount = Object.keys(runtimeHelpers).length;
+if (helperCount > 0) {
+  console.log(`\nRuntime helpers detected: ${helperCount}`);
+  for (const [minified, semantic] of Object.entries(runtimeHelpers)) {
+    console.log(`  ${minified} → ${semantic}`);
+  }
+}
 console.log("");
+
+// --- Runtime Helper Detection ---
+
+/**
+ * Detect esbuild runtime helper patterns in top-level declarations.
+ * Returns a map of { minifiedName: semanticName }.
+ *
+ * esbuild injects runtime helpers for CJS/ESM interop. When minified,
+ * these get arbitrary single-letter names that vary per bundle.
+ * We identify them by AST structure + source patterns, not by name.
+ *
+ * Known helpers and their signatures:
+ *   __commonJS: (a, b) => () => (b || a((b = {exports: {}}).exports, b), b.exports)
+ *   __esm:      (fn, res) => () => (fn && (res = fn(fn = 0)), res)
+ *   __toESM:    Contains __esModule property check
+ *   __copyProps: Uses getOwnPropertyNames + defineProperty loop
+ */
+function detectRuntimeHelpers(ast, code) {
+  const helpers = {};
+
+  for (const node of ast.body) {
+    if (node.type !== "VariableDeclaration") continue;
+
+    for (const decl of node.declarations) {
+      if (!decl.init || !decl.id || decl.id.type !== "Identifier") continue;
+
+      const name = decl.id.name;
+      const initSrc = code.slice(decl.init.start, decl.init.end);
+
+      // Higher-order arrow pattern: (a, b) => () => (...)
+      // Both __commonJS and __esm share this shape
+      if (
+        decl.init.type === "ArrowFunctionExpression" &&
+        decl.init.params.length === 2 &&
+        decl.init.body.type === "ArrowFunctionExpression" &&
+        decl.init.body.params.length === 0
+      ) {
+        const innerSrc = code.slice(decl.init.body.start, decl.init.body.end);
+
+        // __commonJS: inner body contains { exports: {} } pattern
+        if (innerSrc.includes("exports") && innerSrc.includes("{}")) {
+          helpers[name] = "__commonJS";
+          continue;
+        }
+
+        // __esm: inner body contains nullification (= 0) but not exports
+        if (innerSrc.includes("= 0") && !innerSrc.includes("exports")) {
+          helpers[name] = "__esm";
+          continue;
+        }
+      }
+
+      // __toESM: must be a FUNCTION containing __esModule property check
+      // (not a call site like `var koA = L(J)` whose source doesn't define the logic)
+      if (
+        (decl.init.type === "ArrowFunctionExpression" ||
+          decl.init.type === "FunctionExpression") &&
+        (initSrc.includes("__esModule") || initSrc.includes("esModule"))
+      ) {
+        helpers[name] = "__toESM";
+        continue;
+      }
+
+      // __copyProps: must be a FUNCTION using getOwnPropertyNames + defineProperty
+      if (
+        (decl.init.type === "ArrowFunctionExpression" ||
+          decl.init.type === "FunctionExpression") &&
+        initSrc.includes("getOwnPropertyNames") &&
+        initSrc.includes("defineProperty")
+      ) {
+        helpers[name] = "__copyProps";
+        continue;
+      }
+    }
+  }
+
+  return helpers;
+}
 
 // --- Classification Functions ---
 
 /**
  * Classify a top-level AST node into a human-readable category.
  *
- * Python analogy: like ast.NodeVisitor pattern-matching on node types.
- * The esbuild-specific patterns:
- *   R() = lazy CommonJS module factory (like a cached @property)
- *   v() = one-shot lazy initializer (like functools.lru_cache(maxsize=1))
+ * Uses detected runtime helpers for pattern-based factory classification
+ * rather than hardcoded minified names.
  */
-function classifyNode(node) {
+function classifyNode(node, runtimeHelpers) {
   if (node.type === "VariableDeclaration") {
     for (const decl of node.declarations) {
+      // Is this a runtime helper DEFINITION?
+      if (
+        decl.id &&
+        decl.id.type === "Identifier" &&
+        runtimeHelpers[decl.id.name]
+      ) {
+        return "RUNTIME_HELPER";
+      }
+
+      // Does this CALL a runtime helper? (module factory wrapping)
       if (
         decl.init &&
         decl.init.type === "CallExpression" &&
@@ -128,8 +224,11 @@ function classifyNode(node) {
         decl.init.callee.type === "Identifier"
       ) {
         const callee = decl.init.callee.name;
-        if (callee === "R") return "MODULE_FACTORY_R";
-        if (callee === "v") return "MODULE_FACTORY_V";
+        const helperName = runtimeHelpers[callee];
+        if (helperName === "__commonJS") return "MODULE_FACTORY_COMMONJS";
+        if (helperName === "__esm") return "MODULE_FACTORY_ESM";
+        if (helperName === "__toESM") return "ADAPTED_IMPORT";
+        if (helperName === "__copyProps") return "REEXPORT";
       }
     }
     return "VAR_DECL";
@@ -160,11 +259,28 @@ function classifyNode(node) {
 /**
  * Extract human-readable name(s) from a node.
  * For multi-declarator var statements (var a=1, b=2), joins all names.
+ * When runtime helpers are detected, shows semantic mapping (e.g. "w → __commonJS").
  */
-function extractName(node) {
+function extractName(node, runtimeHelpers) {
   if (node.type === "VariableDeclaration") {
     const names = node.declarations.map((d) => {
-      if (d.id && d.id.type === "Identifier") return d.id.name;
+      if (d.id && d.id.type === "Identifier") {
+        const baseName = d.id.name;
+        // Show semantic name for helper definitions
+        const helperName = runtimeHelpers[baseName];
+        if (helperName) return `${baseName} → ${helperName}`;
+        // Show helper used for factory call sites
+        if (
+          d.init &&
+          d.init.type === "CallExpression" &&
+          d.init.callee &&
+          d.init.callee.type === "Identifier"
+        ) {
+          const calleeHelper = runtimeHelpers[d.init.callee.name];
+          if (calleeHelper) return `${baseName} (via ${calleeHelper})`;
+        }
+        return baseName;
+      }
       if (d.id && d.id.type === "ObjectPattern") return "{...}";
       if (d.id && d.id.type === "ArrayPattern") return "[...]";
       return "?";
@@ -174,7 +290,7 @@ function extractName(node) {
   if (node.type === "FunctionDeclaration" && node.id) return node.id.name;
   if (node.type === "ClassDeclaration" && node.id) return node.id.name;
   if (node.type === "ExportNamedDeclaration" && node.declaration) {
-    return extractName(node.declaration);
+    return extractName(node.declaration, runtimeHelpers);
   }
   if (node.type === "ExportDefaultDeclaration" && node.declaration) {
     if (node.declaration.id) return node.declaration.id.name;
@@ -195,6 +311,7 @@ const stats = {
   original_size: originalSize,
   body_size: code.length,
   shebang_size: shebang.length,
+  runtime_helpers: runtimeHelpers,
   total_statements: 0,
   categories: {},
   total_bytes_statements: 0,
@@ -213,8 +330,8 @@ for (let i = 0; i < ast.body.length; i++) {
     stats.total_bytes_gaps += gap.length;
   }
 
-  const category = classifyNode(node);
-  const name = extractName(node);
+  const category = classifyNode(node, runtimeHelpers);
+  const name = extractName(node, runtimeHelpers);
   const stmtCode = code.slice(node.start, node.end);
   const paddedIndex = String(i).padStart(4, "0");
 
