@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * demini-annotate - AST-based annotation of JavaScript bundles
+ * demini-classify - AST-based structural classification of JavaScript bundles
  *
  * Part of the demini toolset for JavaScript bundle reverse engineering.
  *
@@ -11,14 +11,14 @@
  * for analysis and future splitting.
  *
  * Usage:
- *   demini-annotate <input.js> [output-dir]
+ *   demini-classify <input.js> [output-dir]
  *
  * Arguments:
  *   input.js    - JavaScript bundle to annotate (required)
  *   output-dir  - Base directory for DEMINI_NN/ output (default: same dir as input)
  *
  * Output:
- *   DEMINI_NN/01_annotated-{input_basename}.js
+ *   DEMINI_NN/01_classified-{input_basename}.js
  *   DEMINI_NN/01_stats-{input_basename}.json
  *   DEMINI_NN/run.json  (provenance sidecar — appends if exists)
  *
@@ -37,9 +37,9 @@ import { resolveOutputFolder, stripStagePrefix, hashFile, writeProvenance } from
 
 const inputPath = process.argv[2];
 if (!inputPath) {
-  console.error("demini-annotate: AST-based JavaScript bundle annotator");
+  console.error("demini-classify: AST-based JavaScript bundle annotator");
   console.error("");
-  console.error("Usage: demini-annotate <input.js> [output-dir]");
+  console.error("Usage: demini-classify <input.js> [output-dir]");
   console.error("");
   console.error("Arguments:");
   console.error("  input.js    JavaScript bundle to annotate (required)");
@@ -51,7 +51,7 @@ if (!inputPath) {
 
 const resolvedInput = path.resolve(inputPath);
 if (!fs.existsSync(resolvedInput)) {
-  console.error(`demini-annotate: file not found: ${resolvedInput}`);
+  console.error(`demini-classify: file not found: ${resolvedInput}`);
   process.exit(1);
 }
 
@@ -64,12 +64,12 @@ const explicitOutputDir = process.argv[3]
 const { folderPath, runNumber } = resolveOutputFolder(resolvedInput, explicitOutputDir);
 
 const inputBasename = stripStagePrefix(path.basename(resolvedInput));
-const annotatedFilename = `01_annotated-${inputBasename}`;
+const classifiedFilename = `01_classified-${inputBasename}`;
 const statsFilename = `01_stats-${inputBasename.replace(/\.js$/, ".json")}`;
-const annotatedPath = path.join(folderPath, annotatedFilename);
+const classifiedPath = path.join(folderPath, classifiedFilename);
 const statsPath = path.join(folderPath, statsFilename);
 
-console.log("=== demini-annotate ===");
+console.log("=== demini-classify ===");
 console.log(`Input:  ${resolvedInput}`);
 console.log(`Output: ${folderPath}`);
 console.log(`Run:    DEMINI_${String(runNumber).padStart(2, "0")}`);
@@ -394,8 +394,8 @@ console.log(`Output size:       ${output.length.toLocaleString()} bytes`);
 
 // --- Write Outputs ---
 
-fs.writeFileSync(annotatedPath, output);
-console.log(`\nWrote: ${annotatedPath}`);
+fs.writeFileSync(classifiedPath, output);
+console.log(`\nWrote: ${classifiedPath}`);
 
 stats.byte_accounting_match = accountingMatch;
 fs.writeFileSync(statsPath, JSON.stringify(stats, null, 2));
@@ -403,7 +403,7 @@ console.log(`Wrote: ${statsPath}`);
 
 // Write provenance
 writeProvenance(folderPath, {
-  tool: "demini-annotate",
+  tool: "demini-classify",
   stage: "01",
   inputPath: resolvedInput,
   inputHash,
@@ -413,11 +413,11 @@ writeProvenance(folderPath, {
     total_statements: stats.total_statements,
     categories: stats.categories,
     original_bytes: originalSize,
-    annotated_bytes: output.length,
+    classified_bytes: output.length,
     annotation_overhead_bytes: stats.annotation_bytes,
     byte_accounting_match: accountingMatch,
     parse_ms: parseElapsed,
-    output_file: annotatedFilename,
+    output_file: classifiedFilename,
     stats_file: statsFilename,
   },
 });
@@ -442,5 +442,5 @@ console.log(
   `\n  ${"TOTAL".padEnd(20)} ${String(stats.total_statements).padStart(5)} stmts        ${stats.total_bytes_statements.toLocaleString().padStart(12)} bytes`
 );
 
-console.log("\n✅ demini-annotate complete!");
-console.log(`\nVerify: node "${annotatedPath}" --version`);
+console.log("\n✅ demini-classify complete!");
+console.log(`\nVerify: node "${classifiedPath}" --version`);
