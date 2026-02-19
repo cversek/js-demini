@@ -206,6 +206,11 @@ function detectRuntimeHelpers(ast, code) {
  */
 function classifyNode(node, runtimeHelpers) {
   if (node.type === "VariableDeclaration") {
+    // Scan ALL declarators — multi-declarator vars may contain multiple helpers
+    // (newer esbuild merges consecutive var declarations into one statement)
+    const helperSubtypes = new Set();
+    const factoryCategories = new Set();
+
     for (const decl of node.declarations) {
       // Is this a runtime helper DEFINITION?
       if (
@@ -213,7 +218,8 @@ function classifyNode(node, runtimeHelpers) {
         decl.id.type === "Identifier" &&
         runtimeHelpers[decl.id.name]
       ) {
-        return "RUNTIME_HELPER";
+        helperSubtypes.add(runtimeHelpers[decl.id.name]);
+        continue;
       }
 
       // Does this CALL a runtime helper? (module factory wrapping)
@@ -225,11 +231,22 @@ function classifyNode(node, runtimeHelpers) {
       ) {
         const callee = decl.init.callee.name;
         const helperName = runtimeHelpers[callee];
-        if (helperName === "__commonJS") return "MODULE_FACTORY_COMMONJS";
-        if (helperName === "__esm") return "MODULE_FACTORY_ESM";
-        if (helperName === "__toESM") return "ADAPTED_IMPORT";
-        if (helperName === "__copyProps") return "REEXPORT";
+        if (helperName === "__commonJS") { factoryCategories.add("MODULE_FACTORY.__commonJS"); continue; }
+        if (helperName === "__esm") { factoryCategories.add("MODULE_FACTORY.__esm"); continue; }
+        if (helperName === "__toESM") { factoryCategories.add("ADAPTED_IMPORT.__toESM"); continue; }
+        if (helperName === "__copyProps") { factoryCategories.add("REEXPORT.__copyProps"); continue; }
       }
+    }
+
+    // Helper definitions take priority (they define the interop layer)
+    if (helperSubtypes.size > 0) {
+      const sorted = [...helperSubtypes].sort();
+      return `RUNTIME_HELPER.${sorted.join("+")}`;
+    }
+    // Factory calls next
+    if (factoryCategories.size > 0) {
+      const sorted = [...factoryCategories].sort();
+      return sorted.join("+");
     }
     return "VAR_DECL";
   }
