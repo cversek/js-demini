@@ -118,6 +118,84 @@ if (helperCount > 0) {
 }
 console.log("");
 
+// Detect bundle type from structural signatures
+const bundleType = detectBundleType(ast, code, runtimeHelpers);
+console.log(`Bundle type: ${bundleType.bundler} (${bundleType.confidence} confidence)`);
+for (const sig of bundleType.signals) {
+  console.log(`  signal: ${sig}`);
+}
+console.log("");
+
+// --- Bundle Type Detection ---
+
+/**
+ * Detect the bundler that produced this bundle from structural signatures.
+ * Returns an object: { bundler: "esbuild"|"unknown", confidence: "high"|"medium"|"low", signals: string[] }
+ *
+ * esbuild detection signals (by AST shape, not name — per D3):
+ *   - __commonJS helper: higher-order arrow (a,b) => () => (...exports...)
+ *   - __esm helper: higher-order arrow (a,b) => () => (...= 0...)
+ *   - __toESM helper: function containing __esModule check
+ *   - __copyProps helper: function using getOwnPropertyNames + defineProperty
+ *   - Object.create/defineProperty/getOwnPropertyDescriptor/getOwnPropertyNames boilerplate
+ *   - createRequire(import.meta.url) banner pattern
+ */
+function detectBundleType(ast, code, runtimeHelpers) {
+  const signals = [];
+
+  // Check for esbuild runtime helpers (already detected)
+  const helperNames = Object.values(runtimeHelpers);
+  if (helperNames.includes("__commonJS")) signals.push("__commonJS helper detected");
+  if (helperNames.includes("__esm")) signals.push("__esm helper detected");
+  if (helperNames.includes("__toESM")) signals.push("__toESM helper detected");
+  if (helperNames.includes("__copyProps")) signals.push("__copyProps helper detected");
+
+  // Check for Object.* boilerplate at start (esbuild CJS preamble)
+  const preamblePatterns = ["Object.create", "Object.defineProperty", "Object.getOwnPropertyDescriptor", "Object.getOwnPropertyNames"];
+  const first5 = ast.body.slice(0, 5);
+  let preambleCount = 0;
+  for (const node of first5) {
+    const src = code.slice(node.start, node.end);
+    for (const pat of preamblePatterns) {
+      if (src.includes(pat)) { preambleCount++; break; }
+    }
+  }
+  if (preambleCount >= 3) signals.push("Object.* preamble (3+ in first 5 statements)");
+
+  // Check for createRequire banner (ESM format esbuild bundles)
+  if (code.includes("createRequire") && code.includes("import.meta.url")) {
+    signals.push("createRequire(import.meta.url) banner");
+  }
+
+  // Determine bundler
+  if (signals.length >= 2) return { bundler: "esbuild", confidence: "high", signals };
+  if (signals.length === 1) return { bundler: "esbuild", confidence: "medium", signals };
+  return { bundler: "unknown", confidence: "low", signals };
+}
+
+// --- WrapKind Classification ---
+
+/**
+ * Classify a statement's WrapKind based on its category (from classifyNode).
+ *
+ * WrapKind describes the module wrapping architecture:
+ *   CJS     — __commonJS closure: var x = __commonJS((exports, module) => { ... })
+ *   ESM     — __esm terminator or ESM interop adapter (__toESM, __copyProps)
+ *   RUNTIME — Runtime helper definition (not a module, but interop infrastructure)
+ *   None    — Bare inline code with no module wrapper
+ *
+ * Note: ESM back-tracing (hoisted vars above __esm calls) is a Phase 2 (trace)
+ * concern. Phase 1.5 classifies each statement individually by its own shape.
+ */
+function classifyWrapKind(category) {
+  if (category.startsWith("MODULE_FACTORY.__commonJS")) return "CJS";
+  if (category.startsWith("MODULE_FACTORY.__esm")) return "ESM";
+  if (category.startsWith("ADAPTED_IMPORT.__toESM")) return "ESM";
+  if (category.startsWith("REEXPORT.__copyProps")) return "ESM";
+  if (category.startsWith("RUNTIME_HELPER")) return "RUNTIME";
+  return "None";
+}
+
 // --- Runtime Helper Detection ---
 
 /**
@@ -328,9 +406,13 @@ const stats = {
   original_size: originalSize,
   body_size: code.length,
   shebang_size: shebang.length,
+  bundler: bundleType.bundler,
+  bundler_confidence: bundleType.confidence,
+  bundler_signals: bundleType.signals,
   runtime_helpers: runtimeHelpers,
   total_statements: 0,
   categories: {},
+  wrapkind_distribution: { CJS: 0, ESM: 0, RUNTIME: 0, None: 0 },
   total_bytes_statements: 0,
   total_bytes_gaps: 0,
   annotation_bytes: 0,
@@ -348,12 +430,13 @@ for (let i = 0; i < ast.body.length; i++) {
   }
 
   const category = classifyNode(node, runtimeHelpers);
+  const wrapKind = classifyWrapKind(category);
   const name = extractName(node, runtimeHelpers);
   const stmtCode = code.slice(node.start, node.end);
   const paddedIndex = String(i).padStart(4, "0");
 
-  // Machine-parseable annotation comment
-  const annotation = `/* === [${paddedIndex}] TYPE: ${category} | NAME: ${name} | LINES: ${node.loc.start.line}-${node.loc.end.line} | BYTES: ${stmtCode.length} === */\n`;
+  // Machine-parseable annotation comment (enriched with WRAPKIND)
+  const annotation = `/* === [${paddedIndex}] TYPE: ${category} | WRAPKIND: ${wrapKind} | NAME: ${name} | LINES: ${node.loc.start.line}-${node.loc.end.line} | BYTES: ${stmtCode.length} === */\n`;
 
   output += annotation + stmtCode;
   stats.annotation_bytes += annotation.length;
@@ -361,10 +444,12 @@ for (let i = 0; i < ast.body.length; i++) {
 
   stats.total_statements++;
   stats.categories[category] = (stats.categories[category] || 0) + 1;
+  stats.wrapkind_distribution[wrapKind] = (stats.wrapkind_distribution[wrapKind] || 0) + 1;
   stats.total_bytes_statements += stmtCode.length;
   stats.statements.push({
     index: i,
     category,
+    wrapKind,
     name: name !== "-" ? name : null,
     startLine: node.loc.start.line,
     endLine: node.loc.end.line,
@@ -377,6 +462,28 @@ if (lastEnd < code.length) {
   const trailing = code.slice(lastEnd);
   output += trailing;
   stats.total_bytes_gaps += trailing.length;
+}
+
+// --- Prepend Bundle Analysis Header ---
+
+const wk = stats.wrapkind_distribution;
+const headerLines = [
+  `/* ====================================================================`,
+  ` * DEMINI-CLASSIFY BUNDLE ANALYSIS`,
+  ` * Bundler: ${bundleType.bundler} (${bundleType.confidence} confidence)`,
+  ` * Statements: ${stats.total_statements}`,
+  ` * WrapKind: CJS=${wk.CJS} ESM=${wk.ESM} None=${wk.None} RUNTIME=${wk.RUNTIME}`,
+  ` * Size: ${originalSize.toLocaleString()} bytes (${code.length.toLocaleString()} body)`,
+  ` * ==================================================================== */`,
+];
+const headerComment = headerLines.join("\n") + "\n";
+stats.annotation_bytes += headerComment.length;
+
+// Insert header after shebang, before first statement annotation
+if (shebang) {
+  output = shebang + headerComment + output.slice(shebang.length);
+} else {
+  output = headerComment + output;
 }
 
 // --- Byte Accounting Verification ---
@@ -429,6 +536,9 @@ writeProvenance(folderPath, {
   results: {
     total_statements: stats.total_statements,
     categories: stats.categories,
+    wrapkind_distribution: stats.wrapkind_distribution,
+    bundler: bundleType.bundler,
+    bundler_confidence: bundleType.confidence,
     original_bytes: originalSize,
     classified_bytes: output.length,
     annotation_overhead_bytes: stats.annotation_bytes,
@@ -458,6 +568,21 @@ for (const [cat, count] of sorted) {
 console.log(
   `\n  ${"TOTAL".padEnd(20)} ${String(stats.total_statements).padStart(5)} stmts        ${stats.total_bytes_statements.toLocaleString().padStart(12)} bytes`
 );
+
+console.log("\n=== WrapKind Distribution ===");
+for (const [kind, count] of Object.entries(stats.wrapkind_distribution)) {
+  if (count === 0) continue;
+  const pct = ((count / stats.total_statements) * 100).toFixed(1);
+  const kindBytes = stats.statements
+    .filter((s) => s.wrapKind === kind)
+    .reduce((sum, s) => sum + s.bytes, 0);
+  const bytePct = ((kindBytes / stats.total_bytes_statements) * 100).toFixed(1);
+  console.log(
+    `  ${kind.padEnd(10)} ${String(count).padStart(5)} stmts (${pct}%)  ${kindBytes.toLocaleString().padStart(12)} bytes (${bytePct}%)`
+  );
+}
+
+console.log(`\nBundler: ${bundleType.bundler} (${bundleType.confidence})`);
 
 console.log("\n✅ demini-classify complete!");
 console.log(`\nVerify: node "${classifiedPath}" --version`);
