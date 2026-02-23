@@ -9,7 +9,8 @@
   "bin": {
     "demini": "./demini.js",
     "demini-beautify": "./demini-beautify.js",
-    "demini-classify": "./demini-classify.js"
+    "demini-classify": "./demini-classify.js",
+    "demini-trace": "./demini-trace.js"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
