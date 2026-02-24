@@ -99,21 +99,12 @@ if (code.startsWith("#!")) {
   code = code.slice(firstNewline + 1);
 }
 
-// Strip classify header comment if present (starts with /* ==== DEMINI-CLASSIFY)
-let headerComment = "";
-const headerMatch = code.match(/^\/\* ={2,}[\s\S]*?={2,} \*\/\n/);
-if (headerMatch) {
-  headerComment = headerMatch[0];
-  code = code.slice(headerComment.length);
-}
-
-// Also strip annotation comments for clean parsing — but keep track of positions
-// We parse the code WITH annotations since acorn ignores block comments
+// Acorn ignores block comments — all classify annotations (header + per-statement)
+// pass through as-is. No stripping needed.
 
 console.log("Parsing with acorn...");
 const parseStart = Date.now();
-const fullCode = headerComment + code; // re-add header for position consistency
-const ast = acorn.parse(fullCode, acornSettings);
+const ast = acorn.parse(code, acornSettings);
 const parseElapsed = Date.now() - parseStart;
 console.log(`Parse time: ${parseElapsed}ms`);
 console.log(`Top-level statements: ${ast.body.length}`);
@@ -143,7 +134,7 @@ function detectRuntimeHelpers(ast, code) {
   return helpers;
 }
 
-const runtimeHelpers = detectRuntimeHelpers(ast, fullCode);
+const runtimeHelpers = detectRuntimeHelpers(ast, code);
 const helperCount = Object.keys(runtimeHelpers).length;
 if (helperCount > 0) {
   console.log(`\nRuntime helpers: ${helperCount}`);
@@ -223,7 +214,7 @@ console.log(`Dependency edges: ${totalEdges}`);
 
 // --- Classify WrapKind per Statement ---
 
-function classifyStmtWrapKind(stmt, index, runtimeHelpers, fullCode) {
+function classifyStmtWrapKind(stmt, index, runtimeHelpers, code) {
   if (stmt.type !== "VariableDeclaration") return "None";
 
   for (const decl of stmt.declarations) {
@@ -251,7 +242,7 @@ console.log("Identifying modules...");
 const stmtInfo = [];
 for (let i = 0; i < ast.body.length; i++) {
   const stmt = ast.body[i];
-  const wrapKind = classifyStmtWrapKind(stmt, i, runtimeHelpers, fullCode);
+  const wrapKind = classifyStmtWrapKind(stmt, i, runtimeHelpers, code);
   stmtInfo.push({
     index: i,
     wrapKind,
@@ -420,13 +411,13 @@ for (const mod of modules) {
   boundaryStmts.set(firstStmt, mod);
 }
 
-let output = shebang + headerComment;
+let output = shebang;
 let lastEnd = 0;
 let boundaryBytes = 0;
 
 // Re-parse from the full code (with header) to get correct positions
-// Actually we already have ast from fullCode. Positions are relative to fullCode.
-const sourceForOutput = fullCode;
+// AST positions are relative to code. Use code directly for output slicing.
+const sourceForOutput = code;
 
 for (let i = 0; i < ast.body.length; i++) {
   const node = ast.body[i];
@@ -455,7 +446,7 @@ if (lastEnd < sourceForOutput.length) {
 }
 
 // Prepend shebang back if we had one (already added above if present)
-// output already starts with shebang + headerComment
+// output starts with shebang (if present), then all source with comments preserved
 
 console.log(`Boundary comments: ${boundaryStmts.size}`);
 console.log(`Boundary overhead: ${boundaryBytes} bytes`);
