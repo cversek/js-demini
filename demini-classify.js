@@ -282,7 +282,7 @@ function detectRuntimeHelpers(ast, code) {
  * Uses detected runtime helpers for pattern-based factory classification
  * rather than hardcoded minified names.
  */
-function classifyNode(node, runtimeHelpers) {
+function classifyNode(node, runtimeHelpers, stmtIndex = Infinity) {
   if (node.type === "VariableDeclaration") {
     // Scan ALL declarators — multi-declarator vars may contain multiple helpers
     // (newer esbuild merges consecutive var declarations into one statement)
@@ -298,6 +298,27 @@ function classifyNode(node, runtimeHelpers) {
       ) {
         helperSubtypes.add(runtimeHelpers[decl.id.name]);
         continue;
+      }
+
+      // Is this an esbuild Object.* preamble alias?
+      // Pattern: var X = Object.create / .defineProperty / .getOwnPropertyDescriptor /
+      //          .getOwnPropertyNames / .getPrototypeOf / .prototype.hasOwnProperty
+      // Only in first 10 statements to prevent false positives deeper in bundle.
+      if (stmtIndex < 10 && decl.init && decl.init.type === "MemberExpression") {
+        const obj = decl.init.object;
+        const prop = decl.init.property;
+        // Direct: Object.<method>
+        if (obj.type === "Identifier" && obj.name === "Object" && prop.type === "Identifier") {
+          const known = ["create", "defineProperty", "getOwnPropertyDescriptor", "getOwnPropertyNames", "getPrototypeOf"];
+          if (known.includes(prop.name)) { helperSubtypes.add("preamble"); continue; }
+        }
+        // Chained: Object.prototype.hasOwnProperty
+        if (obj.type === "MemberExpression" &&
+            obj.object.type === "Identifier" && obj.object.name === "Object" &&
+            obj.property.type === "Identifier" && obj.property.name === "prototype" &&
+            prop.type === "Identifier" && prop.name === "hasOwnProperty") {
+          helperSubtypes.add("preamble"); continue;
+        }
       }
 
       // Does this CALL a runtime helper? (module factory wrapping)
@@ -429,7 +450,7 @@ for (let i = 0; i < ast.body.length; i++) {
     stats.total_bytes_gaps += gap.length;
   }
 
-  const category = classifyNode(node, runtimeHelpers);
+  const category = classifyNode(node, runtimeHelpers, i);
   const wrapKind = classifyWrapKind(category);
   const name = extractName(node, runtimeHelpers);
   const stmtCode = code.slice(node.start, node.end);
