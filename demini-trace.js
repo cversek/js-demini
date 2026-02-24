@@ -228,8 +228,8 @@ function classifyStmtWrapKind(stmt, index, runtimeHelpers, code) {
       const helper = runtimeHelpers[decl.init.callee.name];
       if (helper === "__commonJS") return "CJS";
       if (helper === "__esm") return "ESM";
-      if (helper === "__toESM") return "ESM";
-      if (helper === "__copyProps") return "ESM";
+      if (helper === "__toESM") return "IMPORT";
+      if (helper === "__copyProps") return "IMPORT";
     }
   }
   return "None";
@@ -355,18 +355,130 @@ if (runtimeStmts.length > 0) {
   nextModuleId++;
 }
 
-// Pass 4: Remaining None — each unassigned statement is its own "bare" module
+// Pass 4: Import Detection — reclassify bare factory invocations as IMPORT
+// Build factory name registry from CJS/ESM modules (Passes 1-2)
+const factoryNames = new Set();
+for (const mod of modules) {
+  if (mod.wrapKind === "CJS" || mod.wrapKind === "ESM") {
+    for (const si of mod.statements) {
+      for (const name of stmtInfo[si].names) factoryNames.add(name);
+    }
+  }
+}
+
+// Detect bare factory invocations: `var x = require_foo()` or `init_bar()`
+for (let i = 0; i < stmtInfo.length; i++) {
+  if (stmtInfo[i].moduleId !== -1 || stmtInfo[i].wrapKind !== "None") continue;
+  const stmt = ast.body[i];
+  if (stmt.type === "VariableDeclaration") {
+    for (const decl of stmt.declarations) {
+      if (decl.init && decl.init.type === "CallExpression" &&
+          decl.init.callee && decl.init.callee.type === "Identifier" &&
+          factoryNames.has(decl.init.callee.name)) {
+        stmtInfo[i].wrapKind = "IMPORT";
+        break;
+      }
+    }
+  } else if (stmt.type === "ExpressionStatement" &&
+             stmt.expression.type === "CallExpression" &&
+             stmt.expression.callee && stmt.expression.callee.type === "Identifier" &&
+             factoryNames.has(stmt.expression.callee.name)) {
+    stmtInfo[i].wrapKind = "IMPORT";
+  }
+}
+
+// Pass 5: Jaccard Clustering with Import Super-Nodes
+// Helper: compute module fingerprint for a statement (set of assigned module IDs it references)
+function computeFingerprint(stmtIdx) {
+  const fp = new Set();
+  for (const ref of graph[stmtIdx].refs_out) {
+    const refMod = stmtInfo[ref].moduleId;
+    if (refMod !== -1) fp.add(refMod);
+  }
+  return fp;
+}
+
+// Helper: Jaccard similarity
+function jaccard(a, b) {
+  if (a.size === 0 && b.size === 0) return 1.0;
+  let intersection = 0;
+  for (const x of a) { if (b.has(x)) intersection++; }
+  return intersection / (a.size + b.size - intersection);
+}
+
+// Split unassigned into contiguous runs (assigned modules create boundaries)
+const runs = [];
+let currentRun = [];
 for (let i = 0; i < stmtInfo.length; i++) {
   if (stmtInfo[i].moduleId === -1) {
-    stmtInfo[i].moduleId = nextModuleId;
+    currentRun.push(i);
+  } else {
+    if (currentRun.length > 0) { runs.push(currentRun); currentRun = []; }
+  }
+}
+if (currentRun.length > 0) runs.push(currentRun);
+
+// Process each contiguous run
+for (const run of runs) {
+  if (run.length === 0) continue;
+
+  // Build elements: collapse consecutive IMPORT stmts into super-nodes
+  const elements = []; // { indices: [stmtIdx...], fingerprint: Set }
+  let i = 0;
+  while (i < run.length) {
+    if (stmtInfo[run[i]].wrapKind === "IMPORT") {
+      // Collect consecutive IMPORT stmts into a super-node
+      const superNode = [];
+      while (i < run.length && stmtInfo[run[i]].wrapKind === "IMPORT") {
+        superNode.push(run[i]);
+        i++;
+      }
+      // Merge fingerprints
+      const merged = new Set();
+      for (const si of superNode) {
+        for (const x of computeFingerprint(si)) merged.add(x);
+      }
+      elements.push({ indices: superNode, fingerprint: merged });
+    } else {
+      elements.push({ indices: [run[i]], fingerprint: computeFingerprint(run[i]) });
+      i++;
+    }
+  }
+
+  // Jaccard split: walk elements, split when similarity drops below threshold
+  const JACCARD_THRESHOLD = 0.5;
+  let cluster = [elements[0]];
+
+  function flushCluster(cl) {
+    const allIndices = cl.flatMap(e => e.indices);
+    const wrapKind = allIndices.every(si => stmtInfo[si].wrapKind === "IMPORT") ? "IMPORT" : "None";
+    for (const si of allIndices) {
+      stmtInfo[si].moduleId = nextModuleId;
+    }
     modules.push({
       id: nextModuleId,
-      wrapKind: "None",
-      statements: [i],
-      primary: i,
+      wrapKind,
+      statements: allIndices,
+      primary: allIndices[0],
     });
     nextModuleId++;
   }
+
+  for (let j = 1; j < elements.length; j++) {
+    // Compare current element's fingerprint with cluster's merged fingerprint
+    const clusterFp = new Set();
+    for (const el of cluster) {
+      for (const x of el.fingerprint) clusterFp.add(x);
+    }
+    const sim = jaccard(clusterFp, elements[j].fingerprint);
+    if (sim >= JACCARD_THRESHOLD) {
+      cluster.push(elements[j]);
+    } else {
+      flushCluster(cluster);
+      cluster = [elements[j]];
+    }
+  }
+  flushCluster(cluster);
 }
 
 // Compute module-level dependencies
@@ -394,11 +506,11 @@ for (const mod of modules) {
 }
 
 // Module summary
-const wrapCounts = { CJS: 0, ESM: 0, RUNTIME: 0, None: 0 };
+const wrapCounts = { CJS: 0, ESM: 0, IMPORT: 0, RUNTIME: 0, None: 0 };
 for (const mod of modules) wrapCounts[mod.wrapKind]++;
 
 console.log(`\nModules identified: ${modules.length}`);
-console.log(`  CJS: ${wrapCounts.CJS}  ESM: ${wrapCounts.ESM}  RUNTIME: ${wrapCounts.RUNTIME}  None: ${wrapCounts.None}`);
+console.log(`  CJS: ${wrapCounts.CJS}  ESM: ${wrapCounts.ESM}  IMPORT: ${wrapCounts.IMPORT}  RUNTIME: ${wrapCounts.RUNTIME}  None: ${wrapCounts.None}`);
 
 // --- Build Traced Output (with boundary comments) ---
 
@@ -485,7 +597,7 @@ const traceData = {
 // --- Build HTML Bundle Visualization ---
 
 function generateBundleMap(modules, totalStatements, basename) {
-  const colors = { CJS: "#4a90d9", ESM: "#50c878", RUNTIME: "#e74c3c", None: "#f5c542" };
+  const colors = { CJS: "#4a90d9", ESM: "#50c878", IMPORT: "#e67e22", RUNTIME: "#e74c3c", None: "#f5c542" };
   const totalStmts = totalStatements;
 
   // Build SVG strips
@@ -541,6 +653,7 @@ function generateBundleMap(modules, totalStatements, basename) {
   <div class="legend">
     <div class="legend-item"><div class="legend-swatch" style="background:${colors.CJS}"></div> CJS (${wrapCounts.CJS})</div>
     <div class="legend-item"><div class="legend-swatch" style="background:${colors.ESM}"></div> ESM (${wrapCounts.ESM})</div>
+    <div class="legend-item"><div class="legend-swatch" style="background:${colors.IMPORT}"></div> IMPORT (${wrapCounts.IMPORT})</div>
     <div class="legend-item"><div class="legend-swatch" style="background:${colors.None}"></div> None (${wrapCounts.None})</div>
     <div class="legend-item"><div class="legend-swatch" style="background:${colors.RUNTIME}"></div> RUNTIME (${wrapCounts.RUNTIME})</div>
   </div>
@@ -612,6 +725,7 @@ console.log(`Provenance: ${path.join(folderPath, "run.json")}`);
 console.log("\n=== Module Summary ===");
 console.log(`  CJS modules:     ${String(wrapCounts.CJS).padStart(5)}`);
 console.log(`  ESM modules:     ${String(wrapCounts.ESM).padStart(5)}`);
+console.log(`  IMPORT modules:  ${String(wrapCounts.IMPORT).padStart(5)}`);
 console.log(`  RUNTIME modules: ${String(wrapCounts.RUNTIME).padStart(5)}`);
 console.log(`  None modules:    ${String(wrapCounts.None).padStart(5)}`);
 console.log(`  TOTAL:           ${String(modules.length).padStart(5)}`);
