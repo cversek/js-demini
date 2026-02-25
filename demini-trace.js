@@ -650,6 +650,7 @@ const traceData = {
 function generateBundleMap(modules, totalStatements, basename) {
   const colors = { CJS: "#4a90d9", ESM: "#50c878", IMPORT: "#e67e22", RUNTIME: "#e74c3c", None: "#f5c542" };
   const totalStmts = modules.reduce((sum, m) => sum + m.stmtCount, 0);
+  const totalBytes = modules.reduce((sum, m) => sum + m.bytes, 0);
 
   // Build SVG strips
   let svgStrips = "";
@@ -661,7 +662,7 @@ function generateBundleMap(modules, totalStatements, basename) {
   const sortedMods = [...modules].sort((a, b) => Math.min(...a.statements) - Math.min(...b.statements));
 
   for (const mod of sortedMods) {
-    const width = Math.max(1, (mod.stmtCount / totalStmts) * svgWidth);
+    const width = Math.max(1, (mod.bytes / totalBytes) * svgWidth);
     const color = colors[mod.wrapKind] || "#999";
     svgStrips += `    <rect x="${xOffset}" y="0" width="${width}" height="${svgHeight}" fill="${color}" stroke="#333" stroke-width="0.5" data-module-id="${mod.id}" data-wrapkind="${mod.wrapKind}" data-stmts="${mod.stmtCount}" data-bytes="${mod.bytes}" data-deps-out="${[...mod.deps_out].join(",")}" data-deps-in="${[...mod.deps_in].join(",")}">\n      <title>Module ${mod.id} (${mod.wrapKind}) — ${mod.stmtCount} stmts, ${mod.bytes} bytes</title>\n    </rect>\n`;
     xOffset += width;
@@ -670,7 +671,7 @@ function generateBundleMap(modules, totalStatements, basename) {
   // Summary stats
   const bytesByKind = { CJS: 0, ESM: 0, RUNTIME: 0, None: 0 };
   for (const mod of modules) bytesByKind[mod.wrapKind] += mod.bytes;
-  const totalBytes = Object.values(bytesByKind).reduce((a, b) => a + b, 0);
+  // totalBytes already computed above for SVG widths
 
   return `<!DOCTYPE html>
 <html lang="en">
