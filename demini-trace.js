@@ -727,7 +727,7 @@ ${svgStrips}    </svg>
   <table>
     <tr><th>ID</th><th>WrapKind</th><th>Stmts</th><th>Bytes</th><th>Deps Out</th><th>Deps In</th><th>Lines</th></tr>
 ${[...modules].sort((a, b) => b.bytes - a.bytes).slice(0, 15).map(m =>
-    `    <tr><td>${m.id}</td><td style="color:${colors[m.wrapKind]}">${m.wrapKind}</td><td>${m.statements.length}</td><td>${m.bytes.toLocaleString()}</td><td>${m.deps_out.size}</td><td>${m.deps_in.size}</td><td>${m.line_start}-${m.line_end}</td></tr>`
+    `    <tr><td>${m.id}</td><td style="color:${colors[m.wrapKind]}">${m.wrapKind}</td><td>${m.stmtCount}</td><td>${m.bytes.toLocaleString()}</td><td>${m.deps_out.size}</td><td>${m.deps_in.size}</td><td>${m.line_start}-${m.line_end}</td></tr>`
   ).join("\n")}
   </table>
 </body>
@@ -784,7 +784,7 @@ console.log(`  TOTAL:           ${String(modules.length).padStart(5)}`);
 console.log("\n=== Top 5 Most Connected Modules ===");
 const byDeps = [...modules].sort((a, b) => (b.deps_out.size + b.deps_in.size) - (a.deps_out.size + a.deps_in.size)).slice(0, 5);
 for (const m of byDeps) {
-  console.log(`  Module ${String(m.id).padStart(3)} (${m.wrapKind.padEnd(7)}) — deps_out=${m.deps_out.size} deps_in=${m.deps_in.size} stmts=${m.statements.length}`);
+  console.log(`  Module ${String(m.id).padStart(3)} (${m.wrapKind.padEnd(7)}) — deps_out=${m.deps_out.size} deps_in=${m.deps_in.size} stmts=${m.stmtCount}`);
 }
 
 console.log("\n✅ demini-trace complete!");
