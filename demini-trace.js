@@ -255,16 +255,49 @@ for (let i = 0; i < ast.body.length; i++) {
   });
 }
 
+// Preamble detection: everything before the first CJS/ESM factory is infrastructure
+let firstFactoryIdx = stmtInfo.length;
+for (let i = 0; i < stmtInfo.length; i++) {
+  if (stmtInfo[i].wrapKind === "CJS" || stmtInfo[i].wrapKind === "ESM") {
+    firstFactoryIdx = i;
+    break;
+  }
+}
+for (let i = 0; i < firstFactoryIdx; i++) {
+  if (stmtInfo[i].wrapKind === "None") {
+    stmtInfo[i].wrapKind = "RUNTIME";
+  }
+}
+
 // Module identification:
-// 1. Each CJS factory = one module
-// 2. Each ESM __esm() call = one module (+ back-trace hoisted vars above it)
-// 3. Runtime helpers = module 0 (infrastructure)
-// 4. Remaining None statements = grouped by connectivity (or each is own module)
+// 1. Runtime helpers + preamble = module 0
+// 2. Each CJS factory = one module
+// 3. Each ESM __esm() call = one module (+ back-trace contiguous hoisted vars)
+// 4. Remaining None/IMPORT statements = Jaccard clustering
+// Post-pass: renumber all modules by source position
 
 const modules = [];
 let nextModuleId = 0;
 
-// Pass 1: CJS factories — each is a self-contained module
+// Pass 1: Runtime helpers + preamble — group into one module
+const runtimeStmts = [];
+for (let i = 0; i < stmtInfo.length; i++) {
+  if (stmtInfo[i].wrapKind === "RUNTIME") {
+    stmtInfo[i].moduleId = nextModuleId;
+    runtimeStmts.push(i);
+  }
+}
+if (runtimeStmts.length > 0) {
+  modules.push({
+    id: nextModuleId,
+    wrapKind: "RUNTIME",
+    statements: runtimeStmts,
+    primary: runtimeStmts[0],
+  });
+  nextModuleId++;
+}
+
+// Pass 2: CJS factories — each is a self-contained module
 for (let i = 0; i < stmtInfo.length; i++) {
   if (stmtInfo[i].wrapKind === "CJS") {
     stmtInfo[i].moduleId = nextModuleId;
@@ -278,9 +311,7 @@ for (let i = 0; i < stmtInfo.length; i++) {
   }
 }
 
-// Pass 2: ESM modules — __esm() call + back-trace hoisted vars
-// ESM back-tracing (D2): scan backward from __esm() call to find hoisted declarations
-// that are referenced inside the __esm factory
+// Pass 3: ESM modules — __esm() call + back-trace contiguous hoisted vars
 for (let i = 0; i < stmtInfo.length; i++) {
   if (stmtInfo[i].wrapKind === "ESM") {
     const esmStmt = ast.body[i];
@@ -300,17 +331,18 @@ for (let i = 0; i < stmtInfo.length; i++) {
       const modStmts = [i];
       stmtInfo[i].moduleId = nextModuleId;
 
-      // Back-trace: scan backward for unassigned None stmts that this __esm references
-      // (hoisted declarations like `var x, y, z;` before the __esm call)
+      // Back-trace: scan backward for CONTIGUOUS unassigned None stmts
+      // Stop at first assigned stmt or non-None wrapKind (bounded, not greedy)
       const refsFromEsm = graph[i].refs_out;
-      for (const refIdx of refsFromEsm) {
-        if (refIdx < i && stmtInfo[refIdx].wrapKind === "None" && stmtInfo[refIdx].moduleId === -1) {
-          // Check if this is likely a hoisted declaration (var/let/const or function)
-          const refStmt = ast.body[refIdx];
-          if (refStmt.type === "VariableDeclaration" || refStmt.type === "FunctionDeclaration") {
-            stmtInfo[refIdx].moduleId = nextModuleId;
-            stmtInfo[refIdx].wrapKind = "ESM"; // reclassify as part of ESM module
-            modStmts.push(refIdx);
+      for (let j = i - 1; j >= 0; j--) {
+        if (stmtInfo[j].moduleId !== -1 || stmtInfo[j].wrapKind !== "None") break;
+        const refStmt = ast.body[j];
+        if (refStmt.type === "VariableDeclaration" || refStmt.type === "FunctionDeclaration") {
+          // Only pull if actually referenced by the __esm factory
+          if (refsFromEsm.has(j)) {
+            stmtInfo[j].moduleId = nextModuleId;
+            stmtInfo[j].wrapKind = "ESM";
+            modStmts.push(j);
           }
         }
       }
@@ -335,24 +367,6 @@ for (let i = 0; i < stmtInfo.length; i++) {
       nextModuleId++;
     }
   }
-}
-
-// Pass 3: Runtime helpers — group into module 0 equivalent
-const runtimeStmts = [];
-for (let i = 0; i < stmtInfo.length; i++) {
-  if (stmtInfo[i].wrapKind === "RUNTIME") {
-    stmtInfo[i].moduleId = nextModuleId;
-    runtimeStmts.push(i);
-  }
-}
-if (runtimeStmts.length > 0) {
-  modules.push({
-    id: nextModuleId,
-    wrapKind: "RUNTIME",
-    statements: runtimeStmts,
-    primary: runtimeStmts[0],
-  });
-  nextModuleId++;
 }
 
 // Pass 4: Import Detection — reclassify bare factory invocations as IMPORT
@@ -479,6 +493,17 @@ for (const run of runs) {
     }
   }
   flushCluster(cluster);
+}
+
+// Post-pass: Renumber modules by source position for intuitive sequential IDs
+modules.sort((a, b) => Math.min(...a.statements) - Math.min(...b.statements));
+const idMap = new Map();
+modules.forEach((mod, idx) => {
+  idMap.set(mod.id, idx);
+  mod.id = idx;
+});
+for (const si of stmtInfo) {
+  if (si.moduleId !== -1) si.moduleId = idMap.get(si.moduleId);
 }
 
 // Compute module-level dependencies
