@@ -509,7 +509,7 @@ for (const mod of modules) {
   mod.bytes = 0;
   mod.innerStmts = 0;
 
-  // Count inner statements for factory modules (CJS/ESM)
+  // Count inner statements recursively for factory modules (CJS/ESM)
   for (const si of mod.statements) {
     const node = ast.body[si];
     if (node.type === "VariableDeclaration") {
@@ -517,14 +517,20 @@ for (const mod of modules) {
         if (decl.init && decl.init.type === "CallExpression" && decl.init.arguments.length > 0) {
           const arg = decl.init.arguments[0];
           if (arg.type === "ArrowFunctionExpression" || arg.type === "FunctionExpression") {
-            if (arg.body && arg.body.type === "BlockStatement" && arg.body.body) {
-              mod.innerStmts += arg.body.body.length;
+            if (arg.body && arg.body.type === "BlockStatement") {
+              walk.simple(arg.body, {
+                BlockStatement(n) { mod.innerStmts += n.body.length; },
+              });
             }
           }
         }
       }
     }
   }
+  // Unified count: inner stmts for factories, top-level stmts otherwise
+  mod.stmtCount = mod.innerStmts > 0
+    ? mod.innerStmts + (mod.statements.length - 1) // inner + hoisted
+    : mod.statements.length;
 
   for (const si of mod.statements) {
     mod.line_start = Math.min(mod.line_start, stmtInfo[si].startLine);
@@ -643,7 +649,7 @@ const traceData = {
 
 function generateBundleMap(modules, totalStatements, basename) {
   const colors = { CJS: "#4a90d9", ESM: "#50c878", IMPORT: "#e67e22", RUNTIME: "#e74c3c", None: "#f5c542" };
-  const totalStmts = totalStatements;
+  const totalStmts = modules.reduce((sum, m) => sum + m.stmtCount, 0);
 
   // Build SVG strips
   let svgStrips = "";
@@ -655,9 +661,9 @@ function generateBundleMap(modules, totalStatements, basename) {
   const sortedMods = [...modules].sort((a, b) => Math.min(...a.statements) - Math.min(...b.statements));
 
   for (const mod of sortedMods) {
-    const width = Math.max(1, (mod.statements.length / totalStmts) * svgWidth);
+    const width = Math.max(1, (mod.stmtCount / totalStmts) * svgWidth);
     const color = colors[mod.wrapKind] || "#999";
-    svgStrips += `    <rect x="${xOffset}" y="0" width="${width}" height="${svgHeight}" fill="${color}" stroke="#333" stroke-width="0.5" data-module-id="${mod.id}" data-wrapkind="${mod.wrapKind}" data-stmts="${mod.statements.length}" data-bytes="${mod.bytes}" data-deps-out="${[...mod.deps_out].join(",")}" data-deps-in="${[...mod.deps_in].join(",")}">\n      <title>Module ${mod.id} (${mod.wrapKind}) — ${mod.statements.length} stmts, ${mod.bytes} bytes</title>\n    </rect>\n`;
+    svgStrips += `    <rect x="${xOffset}" y="0" width="${width}" height="${svgHeight}" fill="${color}" stroke="#333" stroke-width="0.5" data-module-id="${mod.id}" data-wrapkind="${mod.wrapKind}" data-stmts="${mod.stmtCount}" data-bytes="${mod.bytes}" data-deps-out="${[...mod.deps_out].join(",")}" data-deps-in="${[...mod.deps_in].join(",")}">\n      <title>Module ${mod.id} (${mod.wrapKind}) — ${mod.stmtCount} stmts, ${mod.bytes} bytes</title>\n    </rect>\n`;
     xOffset += width;
   }
 
