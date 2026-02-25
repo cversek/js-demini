@@ -562,6 +562,7 @@ for (let i = 0; i < ast.body.length; i++) {
   // Insert boundary comment BEFORE the classify annotation
   if (boundaryStmts.has(i)) {
     const mod = boundaryStmts.get(i);
+    if (output.length > 0 && !output.endsWith("\n")) output += "\n";
     const boundary = `/* --- MODULE BOUNDARY [${String(mod.id).padStart(3, "0")}] Wrap${mod.wrapKind} (${mod.statements.length} stmts, ${mod.bytes} bytes) --- */\n`;
     output += boundary;
     boundaryBytes += boundary.length;
