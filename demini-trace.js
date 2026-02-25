@@ -331,20 +331,14 @@ for (let i = 0; i < stmtInfo.length; i++) {
       const modStmts = [i];
       stmtInfo[i].moduleId = nextModuleId;
 
-      // Back-trace: scan backward for CONTIGUOUS unassigned None stmts
-      // Stop at first assigned stmt or non-None wrapKind (bounded, not greedy)
-      const refsFromEsm = graph[i].refs_out;
+      // Back-trace: absorb ALL contiguous unassigned None stmts before __esm()
+      // In esbuild output, hoisted vars, functions, and imports preceding an
+      // __esm() factory all belong to that ESM module. Contiguity is sufficient.
       for (let j = i - 1; j >= 0; j--) {
         if (stmtInfo[j].moduleId !== -1 || stmtInfo[j].wrapKind !== "None") break;
-        const refStmt = ast.body[j];
-        if (refStmt.type === "VariableDeclaration" || refStmt.type === "FunctionDeclaration") {
-          // Only pull if actually referenced by the __esm factory
-          if (refsFromEsm.has(j)) {
-            stmtInfo[j].moduleId = nextModuleId;
-            stmtInfo[j].wrapKind = "ESM";
-            modStmts.push(j);
-          }
-        }
+        stmtInfo[j].moduleId = nextModuleId;
+        stmtInfo[j].wrapKind = "ESM";
+        modStmts.push(j);
       }
 
       modStmts.sort((a, b) => a - b);
