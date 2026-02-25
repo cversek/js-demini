@@ -559,18 +559,18 @@ const sourceForOutput = code;
 for (let i = 0; i < ast.body.length; i++) {
   const node = ast.body[i];
 
-  // Preserve gap
-  if (node.start > lastEnd) {
-    const gap = sourceForOutput.slice(lastEnd, node.start);
-    output += gap;
-  }
-
-  // Insert boundary comment if this statement starts a module
+  // Insert boundary comment BEFORE the classify annotation
   if (boundaryStmts.has(i)) {
     const mod = boundaryStmts.get(i);
     const boundary = `/* --- MODULE BOUNDARY [${String(mod.id).padStart(3, "0")}] Wrap${mod.wrapKind} (${mod.statements.length} stmts, ${mod.bytes} bytes) --- */\n`;
     output += boundary;
     boundaryBytes += boundary.length;
+  }
+
+  // Preserve gap (contains classify annotation comment)
+  if (node.start > lastEnd) {
+    const gap = sourceForOutput.slice(lastEnd, node.start);
+    output += gap;
   }
 
   output += sourceForOutput.slice(node.start, node.end);
