@@ -507,6 +507,24 @@ for (const mod of modules) {
   mod.line_start = Infinity;
   mod.line_end = 0;
   mod.bytes = 0;
+  mod.innerStmts = 0;
+
+  // Count inner statements for factory modules (CJS/ESM)
+  for (const si of mod.statements) {
+    const node = ast.body[si];
+    if (node.type === "VariableDeclaration") {
+      for (const decl of node.declarations) {
+        if (decl.init && decl.init.type === "CallExpression" && decl.init.arguments.length > 0) {
+          const arg = decl.init.arguments[0];
+          if (arg.type === "ArrowFunctionExpression" || arg.type === "FunctionExpression") {
+            if (arg.body && arg.body.type === "BlockStatement" && arg.body.body) {
+              mod.innerStmts += arg.body.body.length;
+            }
+          }
+        }
+      }
+    }
+  }
 
   for (const si of mod.statements) {
     mod.line_start = Math.min(mod.line_start, stmtInfo[si].startLine);
@@ -557,7 +575,14 @@ for (let i = 0; i < ast.body.length; i++) {
   if (boundaryStmts.has(i)) {
     const mod = boundaryStmts.get(i);
     if (output.length > 0 && !output.endsWith("\n")) output += "\n";
-    const boundary = `/* --- MODULE BOUNDARY [${String(mod.id).padStart(3, "0")}] Wrap${mod.wrapKind} (${mod.statements.length} stmts, ${mod.bytes} bytes) --- */\n`;
+    let stmtLabel;
+    if ((mod.wrapKind === "CJS" || mod.wrapKind === "ESM") && mod.innerStmts > 0) {
+      const hoisted = mod.statements.length - 1; // top-level stmts minus the factory itself
+      stmtLabel = hoisted > 0 ? `${mod.innerStmts} inner + ${hoisted} hoisted` : `${mod.innerStmts} stmts`;
+    } else {
+      stmtLabel = `${mod.statements.length} stmts`;
+    }
+    const boundary = `/* --- MODULE BOUNDARY [${String(mod.id).padStart(3, "0")}] Wrap${mod.wrapKind} (${stmtLabel}, ${mod.bytes} bytes) --- */\n`;
     output += boundary;
     boundaryBytes += boundary.length;
   }
