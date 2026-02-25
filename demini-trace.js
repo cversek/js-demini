@@ -435,8 +435,18 @@ for (const run of runs) {
   let i = 0;
   while (i < run.length) {
     if (stmtInfo[run[i]].wrapKind === "IMPORT") {
-      // Collect consecutive IMPORT stmts into a super-node
+      // Absorb ALL preceding contiguous None elements (imports/functions as preamble)
       const superNode = [];
+      while (elements.length > 0) {
+        const prev = elements[elements.length - 1];
+        if (prev.indices.every(si => stmtInfo[si].wrapKind === "None")) {
+          superNode.unshift(...prev.indices);
+          elements.pop();
+        } else {
+          break;
+        }
+      }
+      // Collect consecutive IMPORT stmts into the super-node
       while (i < run.length && stmtInfo[run[i]].wrapKind === "IMPORT") {
         superNode.push(run[i]);
         i++;
@@ -459,7 +469,7 @@ for (const run of runs) {
 
   function flushCluster(cl) {
     const allIndices = cl.flatMap(e => e.indices);
-    const wrapKind = allIndices.every(si => stmtInfo[si].wrapKind === "IMPORT") ? "IMPORT" : "None";
+    const wrapKind = allIndices.some(si => stmtInfo[si].wrapKind === "IMPORT") ? "IMPORT" : "None";
     for (const si of allIndices) {
       stmtInfo[si].moduleId = nextModuleId;
     }
