@@ -78,7 +78,7 @@ console.log("");
 // --- Configuration ---
 
 const acornSettings = {
-  ecmaVersion: 2022,
+  ecmaVersion: 2025,
   sourceType: "module",
   locations: true,
 };
