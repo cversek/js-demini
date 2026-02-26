@@ -526,18 +526,31 @@ for (const mod of modules) {
   mod.innerStmts = 0;
 
   // Count inner statements recursively for factory modules (CJS/ESM)
+  // Minified: _(Arrow/FunctionExpression)  — arg[0] is the factory function
+  // Non-minified: __commonJS({path(exports, module) {...}}) — arg[0] is ObjectExpression
   for (const si of mod.statements) {
     const node = ast.body[si];
     if (node.type === "VariableDeclaration") {
       for (const decl of node.declarations) {
         if (decl.init && decl.init.type === "CallExpression" && decl.init.arguments.length > 0) {
           const arg = decl.init.arguments[0];
+          // Collect factory function bodies to walk
+          const bodies = [];
           if (arg.type === "ArrowFunctionExpression" || arg.type === "FunctionExpression") {
-            if (arg.body && arg.body.type === "BlockStatement") {
-              walk.simple(arg.body, {
-                BlockStatement(n) { mod.innerStmts += n.body.length; },
-              });
+            if (arg.body?.type === "BlockStatement") bodies.push(arg.body);
+          } else if (arg.type === "ObjectExpression") {
+            // Non-minified: __commonJS({ "path"(exports, module) { ... } })
+            for (const prop of arg.properties) {
+              if ((prop.value?.type === "FunctionExpression" || prop.value?.type === "ArrowFunctionExpression")
+                  && prop.value.body?.type === "BlockStatement") {
+                bodies.push(prop.value.body);
+              }
             }
+          }
+          for (const body of bodies) {
+            walk.simple(body, {
+              BlockStatement(n) { mod.innerStmts += n.body.length; },
+            });
           }
         }
       }
