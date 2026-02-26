@@ -1,0 +1,6 @@
+{
+  "esbuild_args": ["--bundle", "--format=iife", "--global-name=preact", "--sourcemap"],
+  "outfile": "dist/bundle.js",
+  "entry": "entry.js",
+  "known_limitation": "IIFE wrapper hides all internal modules from top-level trace"
+}
