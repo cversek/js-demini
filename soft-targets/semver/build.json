@@ -1,0 +1,5 @@
+{
+  "esbuild_args": ["--bundle", "--platform=node", "--sourcemap"],
+  "outfile": "dist/bundle.js",
+  "entry": "entry.js"
+}

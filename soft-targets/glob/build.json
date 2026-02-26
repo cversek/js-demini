@@ -1,0 +1,6 @@
+{
+  "esbuild_args": ["--bundle", "--platform=node", "--sourcemap"],
+  "outfile": "dist/bundle.js",
+  "entry": "entry.js",
+  "known_limitation": "Nested CJS: all 18 internal modules inside top-level factory, invisible to top-level trace"
+}
