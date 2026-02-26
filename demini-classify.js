@@ -214,6 +214,8 @@ function classifyWrapKind(category) {
  */
 function detectRuntimeHelpers(ast, code) {
   const helpers = {};
+  // Known esbuild helper names (non-minified bundles use these directly)
+  const knownHelpers = { __commonJS: "__commonJS", __esm: "__esm", __toESM: "__toESM", __copyProps: "__copyProps" };
 
   for (const node of ast.body) {
     if (node.type !== "VariableDeclaration") continue;
@@ -222,6 +224,8 @@ function detectRuntimeHelpers(ast, code) {
       if (!decl.init || !decl.id || decl.id.type !== "Identifier") continue;
 
       const name = decl.id.name;
+      // Name-based detection (non-minified bundles)
+      if (knownHelpers[name]) { helpers[name] = knownHelpers[name]; continue; }
       const initSrc = code.slice(decl.init.start, decl.init.end);
 
       // Higher-order arrow pattern: (a, b) => () => (...)
@@ -233,15 +237,16 @@ function detectRuntimeHelpers(ast, code) {
         decl.init.body.params.length === 0
       ) {
         const innerSrc = code.slice(decl.init.body.start, decl.init.body.end);
+        const innerNorm = innerSrc.replace(/\s+/g, '');
 
         // __commonJS: inner body contains { exports: {} } pattern
-        if (innerSrc.includes("exports") && innerSrc.includes("{}")) {
+        if (innerNorm.includes("exports") && innerNorm.includes("{}")) {
           helpers[name] = "__commonJS";
           continue;
         }
 
-        // __esm: inner body contains nullification (= 0) but not exports
-        if (innerSrc.includes("= 0") && !innerSrc.includes("exports")) {
+        // __esm: inner body contains nullification (=0) but not exports
+        if (innerNorm.includes("=0") && !innerNorm.includes("exports")) {
           helpers[name] = "__esm";
           continue;
         }
