@@ -113,17 +113,23 @@ console.log(`Top-level statements: ${ast.body.length}`);
 
 function detectRuntimeHelpers(ast, code) {
   const helpers = {};
+  // Known esbuild helper names (non-minified bundles use these directly)
+  const knownHelpers = { __commonJS: "__commonJS", __esm: "__esm", __toESM: "__toESM", __copyProps: "__copyProps" };
   for (const node of ast.body) {
     if (node.type !== "VariableDeclaration") continue;
     for (const decl of node.declarations) {
       if (!decl.init || !decl.id || decl.id.type !== "Identifier") continue;
       const name = decl.id.name;
+      // Name-based detection (non-minified bundles)
+      if (knownHelpers[name]) { helpers[name] = knownHelpers[name]; continue; }
+      // Structural detection (minified bundles — names are single letters)
       const initSrc = code.slice(decl.init.start, decl.init.end);
       if (decl.init.type === "ArrowFunctionExpression" && decl.init.params.length === 2 &&
           decl.init.body.type === "ArrowFunctionExpression" && decl.init.body.params.length === 0) {
         const innerSrc = code.slice(decl.init.body.start, decl.init.body.end);
-        if (innerSrc.includes("exports") && innerSrc.includes("{}")) { helpers[name] = "__commonJS"; continue; }
-        if (innerSrc.includes("= 0") && !innerSrc.includes("exports")) { helpers[name] = "__esm"; continue; }
+        const innerNorm = innerSrc.replace(/\s+/g, '');
+        if (innerNorm.includes("exports") && innerNorm.includes("{}")) { helpers[name] = "__commonJS"; continue; }
+        if (innerNorm.includes("=0") && !innerNorm.includes("exports")) { helpers[name] = "__esm"; continue; }
       }
       if ((decl.init.type === "ArrowFunctionExpression" || decl.init.type === "FunctionExpression") &&
           (initSrc.includes("__esModule") || initSrc.includes("esModule"))) { helpers[name] = "__toESM"; continue; }
