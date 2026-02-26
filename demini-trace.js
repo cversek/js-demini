@@ -643,6 +643,8 @@ const traceData = {
     id: mod.id,
     wrapKind: mod.wrapKind,
     statements: mod.statements,
+    stmtCount: mod.stmtCount,
+    innerStmts: mod.innerStmts,
     line_start: mod.line_start,
     line_end: mod.line_end,
     bytes: mod.bytes,
