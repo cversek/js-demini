@@ -95,10 +95,28 @@ Module naming uses the first defined variable name (e.g., `mod_0001_J.js` for `v
 
 Tested on bundles with 4600+ modules — 100% parse success rate, 95%+ source coverage, under 4 seconds.
 
+### `demini-extract`
+
+Synthesizes all pipeline artifacts into a green Bundle Knowledge Graph (BKG) — a property graph of modules, identifiers, dependencies, string inventories, and AST fingerprints. No reference source needed.
+
+```
+node demini-extract.js <input.js> [output-dir]
+```
+
+Output:
+- `04_bkg-*.json` — Green BKG with structural intelligence
+
+The BKG is the universal intermediate representation for the demini pipeline. Every enrichment technique (cross-version matching, source maps, LLM inference, manual annotation) operates on and produces BKGs. Two BKGs can be merged. See `docs/bkg-format.md` for the full specification.
+
+Green BKG contents per module: dependency graph (navigable via string IDs), string inventory (up to 50 unique literals), AST structural fingerprint, byte size, line range, and wrapKind.
+
+Tested on 4600+ module bundles — 84K strings extracted, 99.96% AST fingerprint success, under 5 seconds.
+
 ### Future stages
 
-- **demini-annotate** — add per-module semantic annotations (function boundaries, exports, string catalogs)
-- **demini-rename** — apply semantic name mappings (from analysis, heuristics, or LLM-assisted naming) to replace obfuscated identifiers
+- **demini-bkg match** — cross-version module matching via string seeds, graph propagation, AST fingerprints, and optional source maps
+- **demini-bkg apply** — apply semantic names from BKG to source, using `_dvph_` placeholders for unknowns
+- **demini-bkg merge** — combine BKGs across version chain for knowledge accumulation
 
 ## Design principles
 
