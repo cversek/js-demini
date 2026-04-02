@@ -65,10 +65,38 @@ function hIq(A, q) {
 }
 ```
 
+### `demini-trace`
+
+Walks the AST to build a bidirectional dependency graph, identifies module boundaries using progressive wrapper elimination (CJS/ESM/IIFE detection), and inserts boundary comments into the source. Produces a trace JSON with per-module metadata and an HTML bundle visualization.
+
+```
+node demini-trace.js <input.js> [output-dir]
+```
+
+Output includes:
+- `02_traced-*.js` — source with boundary comments
+- `02_trace-*.json` — dependency graph + module boundaries
+- `02_bundle-map-*.html` — visual module map
+
+### `demini-split`
+
+Reads a traced bundle + its trace JSON, splits the monolithic bundle into individual module files using AST-precise character ranges. Each extracted module is verified to parse independently with acorn.
+
+```
+node demini-split.js <input.js> [output-dir]
+```
+
+Output:
+- `03_split-*/mod_NNNN_name.js` — per-module files
+- `03_split-*/manifest.json` — module index with metadata
+- `03_stats-*.json` — split statistics and coverage
+
+Module naming uses the first defined variable name (e.g., `mod_0001_J.js` for `var J = __commonJS(...)`). RUNTIME helpers and TOPLEVEL code get descriptive names. The manifest maps every module ID to its file, wrapKind, dependencies, line range, and byte size.
+
+Tested on bundles with 4600+ modules — 100% parse success rate, 95%+ source coverage, under 4 seconds.
+
 ### Future stages
 
-- **demini-trace** — map inter-module dependencies via factory variable cross-references
-- **demini-split** — use classification boundaries to carve the bundle into separate module files
 - **demini-annotate** — add per-module semantic annotations (function boundaries, exports, string catalogs)
 - **demini-rename** — apply semantic name mappings (from analysis, heuristics, or LLM-assisted naming) to replace obfuscated identifiers
 
