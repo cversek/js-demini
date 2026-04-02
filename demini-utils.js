@@ -157,3 +157,59 @@ export function writeProvenance(folderPath, opts) {
 
   return provenance;
 }
+
+// --- BKG Utilities ---
+
+const BKG_VERSION = "1.0";
+
+/**
+ * Read a BKG JSON file with basic structural validation.
+ * @param {string} bkgPath - Path to BKG JSON file
+ * @returns {object} Parsed BKG
+ * @throws {Error} If file missing, unparseable, or structurally invalid
+ */
+export function readBkg(bkgPath) {
+  if (!fs.existsSync(bkgPath)) {
+    throw new Error(`BKG file not found: ${bkgPath}`);
+  }
+  const bkg = JSON.parse(fs.readFileSync(bkgPath, "utf8"));
+  const errors = validateBkg(bkg);
+  if (errors.length > 0) {
+    throw new Error(`BKG validation failed:\n  ${errors.join("\n  ")}`);
+  }
+  return bkg;
+}
+
+/**
+ * Validate BKG structure. Returns array of error strings (empty = valid).
+ * @param {object} bkg - Parsed BKG object
+ * @returns {string[]} Validation errors
+ */
+export function validateBkg(bkg) {
+  const errors = [];
+  if (!bkg.bkg_version) errors.push("missing bkg_version");
+  else if (bkg.bkg_version !== BKG_VERSION) errors.push(`unsupported bkg_version: ${bkg.bkg_version}`);
+  if (!bkg.bundle) errors.push("missing bundle");
+  if (!Array.isArray(bkg.modules)) errors.push("missing or invalid modules array");
+  if (!bkg.coverage) errors.push("missing coverage");
+
+  // Validate module ID uniqueness
+  if (Array.isArray(bkg.modules)) {
+    const ids = new Set();
+    for (const m of bkg.modules) {
+      if (!m.id) { errors.push("module missing id"); continue; }
+      if (ids.has(m.id)) errors.push(`duplicate module id: ${m.id}`);
+      ids.add(m.id);
+    }
+  }
+  return errors;
+}
+
+/**
+ * Build a module lookup map from a BKG for graph traversal.
+ * @param {object} bkg - Parsed BKG object
+ * @returns {Map<string, object>} Module ID → module object
+ */
+export function buildModuleMap(bkg) {
+  return new Map(bkg.modules.map(m => [m.id, m]));
+}
