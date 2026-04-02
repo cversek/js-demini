@@ -6,6 +6,7 @@
  *
  * Subcommands:
  *   match <target.bkg> <reference.bkg>  — Cross-version module matching
+ *   apply <bkg> <split-dir> [-o outdir]  — Annotate split modules with BKG knowledge
  *   stats <bkg>                          — Coverage report
  *
  * The match command enriches a green target BKG by finding module
@@ -23,11 +24,12 @@ import { readBkg, buildModuleMap } from "./demini-utils.js";
 
 const subcommand = process.argv[2];
 
-if (!subcommand || !["match", "stats"].includes(subcommand)) {
+if (!subcommand || !["match", "apply", "stats"].includes(subcommand)) {
   console.error("demini-bkg: Bundle Knowledge Graph operations");
   console.error("");
   console.error("Subcommands:");
   console.error("  match <target.bkg> <reference.bkg> [-o output.bkg]  — Cross-version matching");
+  console.error("  apply <bkg> <split-dir> [-o outdir]                  — Annotate modules with BKG");
   console.error("  stats <bkg>                                          — Coverage report");
   process.exit(1);
 }
@@ -70,6 +72,153 @@ if (subcommand === "stats") {
       console.log(`  ${e.technique}: ${e.modules_enriched} mods, ${e.identifiers_enriched} ids (${e.timestamp})`);
     }
   }
+
+  process.exit(0);
+}
+
+// =====================================================================
+// SUBCOMMAND: apply
+// =====================================================================
+
+if (subcommand === "apply") {
+  const bkgPath = process.argv[3];
+  const splitDirArg = process.argv[4];
+
+  if (!bkgPath || !splitDirArg) {
+    console.error("Usage: demini-bkg apply <bkg.json> <split-dir> [-o outdir]");
+    process.exit(1);
+  }
+
+  const oIdx = process.argv.indexOf("-o");
+  const outDir = (oIdx !== -1 && process.argv[oIdx + 1])
+    ? path.resolve(process.argv[oIdx + 1])
+    : path.resolve(splitDirArg) + ".applied";
+
+  console.log("=== demini-bkg apply ===");
+  console.log(`BKG:      ${bkgPath}`);
+  console.log(`Split:    ${splitDirArg}`);
+  console.log(`Output:   ${outDir}`);
+  console.log("");
+
+  const applyStart = Date.now();
+  const bkg = readBkg(path.resolve(bkgPath));
+  const splitDir = path.resolve(splitDirArg);
+  const manifestPath = path.join(splitDir, "manifest.json");
+
+  if (!fs.existsSync(manifestPath)) {
+    console.error("apply: manifest.json not found in split directory");
+    process.exit(1);
+  }
+
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const modMap = buildModuleMap(bkg);
+
+  fs.mkdirSync(outDir, { recursive: true });
+
+  let annotated = 0;
+  let matched = 0;
+  let unmatched = 0;
+
+  // Build BKG module lookup by minified_name for matching to split manifest
+  const bkgByMinified = new Map();
+  for (const m of bkg.modules) {
+    bkgByMinified.set(m.minified_name, m);
+  }
+
+  // Also build by numeric id for fallback
+  const bkgById = new Map();
+  for (const m of bkg.modules) {
+    // Extract numeric id from "mod:123" or "mod:name" patterns
+    const numMatch = m.id.match(/^mod:(\d+)$/);
+    if (numMatch) bkgById.set(parseInt(numMatch[1]), m);
+  }
+
+  for (const splitMod of manifest.modules) {
+    const modFilePath = path.join(splitDir, splitMod.filename);
+    if (!fs.existsSync(modFilePath)) continue;
+
+    let code = fs.readFileSync(modFilePath, "utf8");
+
+    // Find corresponding BKG module
+    let bkgMod = null;
+    // Try by firstName match to minified_name
+    if (splitMod.firstName) bkgMod = bkgByMinified.get(splitMod.firstName);
+    // Try by numeric ID
+    if (!bkgMod && typeof splitMod.id === "number") bkgMod = bkgById.get(splitMod.id);
+    // Try by id directly
+    if (!bkgMod) bkgMod = modMap.get(`mod:${splitMod.firstName || splitMod.id}`);
+
+    // Build annotation header comment
+    const lines = [];
+    lines.push(`/**`);
+    lines.push(` * demini-bkg: Module ${splitMod.id} (${splitMod.wrapKind})`);
+
+    if (bkgMod) {
+      if (bkgMod.semantic_name) {
+        lines.push(` * Matched: ${bkgMod.semantic_name} (${(bkgMod.semantic_confidence * 100).toFixed(0)}% confidence)`);
+        lines.push(` * Source: ${bkgMod.semantic_source || "unknown"}`);
+        matched++;
+      } else {
+        lines.push(` * Status: unmatched (_dvph_${splitMod.id}_)`);
+        unmatched++;
+      }
+
+      if (bkgMod.source_file) {
+        lines.push(` * Source file: ${bkgMod.source_file}`);
+      }
+
+      if (bkgMod.deps_out.length > 0) {
+        const depNames = bkgMod.deps_out.slice(0, 5).map(d => {
+          const dep = modMap.get(d);
+          return dep?.semantic_name || d.replace("mod:", "");
+        });
+        const suffix = bkgMod.deps_out.length > 5 ? ` (+${bkgMod.deps_out.length - 5} more)` : "";
+        lines.push(` * Depends on: ${depNames.join(", ")}${suffix}`);
+      }
+
+      if (bkgMod.deps_in.length > 0) {
+        lines.push(` * Used by: ${bkgMod.deps_in.length} modules`);
+      }
+
+      if (bkgMod.strings && bkgMod.strings.length > 0) {
+        const preview = bkgMod.strings.slice(0, 3).map(s => `"${s.slice(0, 30)}"`).join(", ");
+        const suffix = bkgMod.strings.length > 3 ? ` (+${bkgMod.strings.length - 3} more)` : "";
+        lines.push(` * Key strings: ${preview}${suffix}`);
+      }
+    } else {
+      lines.push(` * Status: no BKG entry found`);
+      unmatched++;
+    }
+
+    lines.push(` */`);
+    const header = lines.join("\n");
+
+    const annotatedCode = header + "\n" + code;
+    const outPath = path.join(outDir, splitMod.filename);
+    fs.writeFileSync(outPath, annotatedCode);
+    annotated++;
+  }
+
+  // Copy manifest with apply metadata
+  const appliedManifest = {
+    ...manifest,
+    applied: {
+      timestamp: new Date().toISOString(),
+      bkg: path.basename(bkgPath),
+      matched,
+      unmatched,
+      total: annotated,
+    },
+  };
+  fs.writeFileSync(path.join(outDir, "manifest.json"), JSON.stringify(appliedManifest, null, 2));
+
+  const applyElapsed = Date.now() - applyStart;
+  console.log(`=== Apply complete ===`);
+  console.log(`Annotated: ${annotated} modules`);
+  console.log(`  Matched: ${matched}`);
+  console.log(`  Unmatched: ${unmatched}`);
+  console.log(`Elapsed: ${applyElapsed}ms`);
+  console.log(`\nWrote: ${outDir}/`);
 
   process.exit(0);
 }
