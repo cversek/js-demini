@@ -114,11 +114,38 @@ Green BKG contents per module: dependency graph (navigable via string IDs), stri
 
 Tested on 4600+ module bundles — 84K strings extracted, 99.96% AST fingerprint success, under 5 seconds.
 
-### Future stages
+### `demini-bkg`
 
-- **demini-bkg match** — cross-version module matching via string seeds, graph propagation, AST fingerprints, and optional source maps
-- **demini-bkg apply** — apply semantic names from BKG to source, using `_dvph_` placeholders for unknowns
-- **demini-bkg merge** — combine BKGs across version chain for knowledge accumulation
+BKG operations toolkit with multiple subcommands:
+
+```
+node demini-bkg.js match <target.bkg> <ref.bkg>     — cross-version module matching
+node demini-bkg.js propagate <bkg>                    — spread names via dependency graph
+node demini-bkg.js apply <bkg> <split-dir>            — annotate modules with BKG knowledge
+node demini-bkg.js merge <bkg1> <bkg2>                — combine BKGs (highest confidence wins)
+node demini-bkg.js diff <bkg1> <bkg2>                 — compare BKG versions (module delta)
+node demini-bkg.js stats <bkg>                        — coverage report
+```
+
+**match** uses three cascading techniques: string literal seed matching (Jaccard similarity), dependency graph propagation, and AST fingerprint matching. Tested at 85-91% match rate on 280-4600 module bundles.
+
+**propagate** spreads semantic names from matched modules to their unmatched neighbors. Typically adds 10-25% more named modules.
+
+**apply** injects BKG metadata as header comments into split module files — match status, confidence, dependencies, key strings.
+
+See `docs/matching-techniques.md` for algorithm details.
+
+### `demini-chain`
+
+Version chain orchestrator. Runs the full pipeline across multiple bundle versions, chain-matching adjacent versions to accumulate knowledge.
+
+```
+node demini-chain.js <manifest.json> [-o output-dir]
+```
+
+Manifest specifies version/bundle pairs. The tool pipelines each version, then matches v1→v2→v3 sequentially. Resume support skips versions with existing BKGs.
+
+See `docs/bkg-format.md` and `docs/version-chain.md` for format and workflow details.
 
 ## Design principles
 
