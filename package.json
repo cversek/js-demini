@@ -12,7 +12,8 @@
     "demini-classify": "./demini-classify.js",
     "demini-trace": "./demini-trace.js",
     "demini-split": "./demini-split.js",
-    "demini-extract": "./demini-extract.js"
+    "demini-extract": "./demini-extract.js",
+    "demini-bkg": "./demini-bkg.js"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
