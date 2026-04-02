@@ -17,16 +17,18 @@ bundle.js                       the raw bundle, minified
   |  demini-classify
 01_classified-bundle.js         boundary markers + structural profile
   |  demini-trace
-02_trace-bundle.json            inter-module dependency graph
+02_traced-bundle.js             dependency graph + boundary comments
   |  demini-split
-03_split-bundle/                separate files, reassemblable
-  |  demini-annotate
-04_annotated-bundle/            per-module semantic annotations
-  |  demini-rename
-05_renamed-bundle/              obfuscated names -> semantic names
+03_split-bundle/                individual module files
+  |  demini-extract
+04_bkg-bundle.json              green Bundle Knowledge Graph
+  |  demini-bkg match           (+ a second bundle's BKG)
+04_bkg-bundle.matched.json      enriched BKG with cross-version matches
+  |  demini-bkg apply
+05_applied-bundle/              modules annotated with BKG knowledge
 ```
 
-Every stage produces files you can `node` directly. Nothing breaks along the way.
+Stages 00-03 produce files you can `node` directly. Nothing breaks along the way. Stages 04+ operate on the BKG (JSON knowledge graph) rather than source code.
 
 ## Current tools
 
