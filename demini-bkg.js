@@ -24,11 +24,12 @@ import { readBkg, buildModuleMap } from "./demini-utils.js";
 
 const subcommand = process.argv[2];
 
-if (!subcommand || !["match", "apply", "stats"].includes(subcommand)) {
+if (!subcommand || !["match", "propagate", "apply", "stats"].includes(subcommand)) {
   console.error("demini-bkg: Bundle Knowledge Graph operations");
   console.error("");
   console.error("Subcommands:");
   console.error("  match <target.bkg> <reference.bkg> [-o output.bkg]  — Cross-version matching");
+  console.error("  propagate <bkg> [-o output.bkg]                      — Spread names via deps");
   console.error("  apply <bkg> <split-dir> [-o outdir]                  — Annotate modules with BKG");
   console.error("  stats <bkg>                                          — Coverage report");
   process.exit(1);
@@ -72,6 +73,111 @@ if (subcommand === "stats") {
       console.log(`  ${e.technique}: ${e.modules_enriched} mods, ${e.identifiers_enriched} ids (${e.timestamp})`);
     }
   }
+
+  process.exit(0);
+}
+
+// =====================================================================
+// SUBCOMMAND: propagate
+// =====================================================================
+
+if (subcommand === "propagate") {
+  const bkgPath = process.argv[3];
+  if (!bkgPath) { console.error("Usage: demini-bkg propagate <bkg.json> [-o output.bkg]"); process.exit(1); }
+
+  const oIdx = process.argv.indexOf("-o");
+  const outputPath = (oIdx !== -1 && process.argv[oIdx + 1])
+    ? path.resolve(process.argv[oIdx + 1])
+    : path.resolve(bkgPath).replace(/\.json$/, ".propagated.json");
+
+  console.log("=== demini-bkg propagate ===");
+  console.log(`Input:  ${bkgPath}`);
+  console.log(`Output: ${outputPath}`);
+  console.log("");
+
+  const propStart = Date.now();
+  const bkg = readBkg(path.resolve(bkgPath));
+  const modMap = buildModuleMap(bkg);
+
+  const namedBefore = bkg.modules.filter(m => m.semantic_name).length;
+  console.log(`Named modules before: ${namedBefore}/${bkg.modules.length}`);
+
+  let propagated = 0;
+  let changed = true;
+  let iterations = 0;
+  const MAX_ITER = 10;
+
+  while (changed && iterations < MAX_ITER) {
+    changed = false;
+    iterations++;
+
+    for (const mod of bkg.modules) {
+      if (mod.semantic_name) continue; // Already named
+
+      // Collect named neighbors
+      const namedDepsOut = mod.deps_out
+        .map(id => modMap.get(id))
+        .filter(m => m && m.semantic_name);
+      const namedDepsIn = mod.deps_in
+        .map(id => modMap.get(id))
+        .filter(m => m && m.semantic_name);
+
+      const totalNamed = namedDepsOut.length + namedDepsIn.length;
+      const totalDeps = mod.deps_out.length + mod.deps_in.length;
+
+      if (totalNamed === 0 || totalDeps === 0) continue;
+
+      // Propagation heuristic: if >50% of neighbors are named,
+      // derive a context-based name from the most connected named neighbor
+      const namedRatio = totalNamed / totalDeps;
+      if (namedRatio < 0.4) continue; // Not enough context
+
+      // Find the best-connected named neighbor (highest deps_in = most important)
+      const allNamed = [...namedDepsOut, ...namedDepsIn];
+      allNamed.sort((a, b) => b.deps_in.length - a.deps_in.length);
+      const primary = allNamed[0];
+
+      // Uniqueness gate: the unnamed module must have a distinctive position
+      // (not just a generic leaf with one connection)
+      if (totalDeps < 2 && !mod.strings?.length) continue;
+
+      // Generate propagated name: "near_{primary_name}"
+      const baseName = primary.semantic_name.replace(/^near_/, "");
+      mod.semantic_name = `near_${baseName}`;
+      mod.semantic_confidence = Math.min(0.6, namedRatio * 0.7);
+      mod.semantic_source = "propagation";
+
+      propagated++;
+      changed = true;
+    }
+  }
+
+  const namedAfter = bkg.modules.filter(m => m.semantic_name).length;
+  const improvement = namedAfter - namedBefore;
+  const pctImprovement = namedBefore > 0 ? ((improvement / namedBefore) * 100).toFixed(1) : "N/A";
+
+  // Update coverage
+  bkg.coverage.modules_named = namedAfter;
+
+  // Log enrichment
+  bkg.enrichments.push({
+    timestamp: new Date().toISOString(),
+    technique: "graph_propagation",
+    reference_version: null,
+    modules_enriched: propagated,
+    identifiers_enriched: 0,
+    provenance: `demini-bkg propagate: ${iterations} iterations, ${pctImprovement}% improvement`,
+  });
+
+  fs.writeFileSync(outputPath, JSON.stringify(bkg, null, 2));
+  const propElapsed = Date.now() - propStart;
+
+  console.log(`\n=== Propagation complete ===`);
+  console.log(`Named before: ${namedBefore}`);
+  console.log(`Named after: ${namedAfter} (+${improvement}, ${pctImprovement}%)`);
+  console.log(`Iterations: ${iterations}`);
+  console.log(`Elapsed: ${propElapsed}ms`);
+  console.log(`\nWrote: ${outputPath}`);
 
   process.exit(0);
 }
