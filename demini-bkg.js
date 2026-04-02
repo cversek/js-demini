@@ -24,13 +24,15 @@ import { readBkg, buildModuleMap } from "./demini-utils.js";
 
 const subcommand = process.argv[2];
 
-if (!subcommand || !["match", "propagate", "apply", "stats"].includes(subcommand)) {
+if (!subcommand || !["match", "propagate", "apply", "merge", "diff", "stats"].includes(subcommand)) {
   console.error("demini-bkg: Bundle Knowledge Graph operations");
   console.error("");
   console.error("Subcommands:");
   console.error("  match <target.bkg> <reference.bkg> [-o output.bkg]  — Cross-version matching");
   console.error("  propagate <bkg> [-o output.bkg]                      — Spread names via deps");
   console.error("  apply <bkg> <split-dir> [-o outdir]                  — Annotate modules with BKG");
+  console.error("  merge <bkg1> <bkg2> [-o output.bkg]                  — Combine BKGs (high-conf wins)");
+  console.error("  diff <bkg1> <bkg2>                                   — Compare BKG versions");
   console.error("  stats <bkg>                                          — Coverage report");
   process.exit(1);
 }
@@ -325,6 +327,194 @@ if (subcommand === "apply") {
   console.log(`  Unmatched: ${unmatched}`);
   console.log(`Elapsed: ${applyElapsed}ms`);
   console.log(`\nWrote: ${outDir}/`);
+
+  process.exit(0);
+}
+
+// =====================================================================
+// SUBCOMMAND: merge
+// =====================================================================
+
+if (subcommand === "merge") {
+  const bkg1Path = process.argv[3];
+  const bkg2Path = process.argv[4];
+  if (!bkg1Path || !bkg2Path) { console.error("Usage: demini-bkg merge <bkg1.json> <bkg2.json> [-o output.bkg]"); process.exit(1); }
+
+  const oIdx = process.argv.indexOf("-o");
+  const outputPath = (oIdx !== -1 && process.argv[oIdx + 1])
+    ? path.resolve(process.argv[oIdx + 1])
+    : path.resolve(bkg1Path).replace(/\.json$/, ".merged.json");
+
+  console.log("=== demini-bkg merge ===");
+  const mergeStart = Date.now();
+
+  const bkg1 = readBkg(path.resolve(bkg1Path));
+  const bkg2 = readBkg(path.resolve(bkg2Path));
+
+  console.log(`BKG1: ${bkg1.modules.length} modules (${bkg1.coverage.modules_named} named)`);
+  console.log(`BKG2: ${bkg2.modules.length} modules (${bkg2.coverage.modules_named} named)`);
+
+  // Build module maps by ID
+  const map1 = buildModuleMap(bkg1);
+  const map2 = buildModuleMap(bkg2);
+
+  // Merge: union of modules, highest confidence wins per field
+  const allIds = new Set([...map1.keys(), ...map2.keys()]);
+  const mergedModules = [];
+  let conflicts = 0;
+
+  for (const id of allIds) {
+    const m1 = map1.get(id);
+    const m2 = map2.get(id);
+
+    if (m1 && !m2) { mergedModules.push({ ...m1 }); continue; }
+    if (!m1 && m2) { mergedModules.push({ ...m2 }); continue; }
+
+    // Both exist — merge with highest confidence wins
+    const merged = { ...m1 };
+
+    const conf1 = m1.semantic_confidence || 0;
+    const conf2 = m2.semantic_confidence || 0;
+
+    if (conf2 > conf1 && m2.semantic_name) {
+      merged.semantic_name = m2.semantic_name;
+      merged.semantic_confidence = m2.semantic_confidence;
+      merged.semantic_source = m2.semantic_source;
+      if (m1.semantic_name && m1.semantic_name !== m2.semantic_name) conflicts++;
+    }
+
+    // Merge strings (union, capped)
+    if (m1.strings && m2.strings) {
+      const combined = new Set([...m1.strings, ...m2.strings]);
+      merged.strings = [...combined].slice(0, 50);
+    }
+
+    // Take better source_file
+    if (!merged.source_file && m2.source_file) merged.source_file = m2.source_file;
+
+    mergedModules.push(merged);
+  }
+
+  // Merge identifiers (union by ID, highest confidence wins)
+  const idMap1 = new Map((bkg1.identifiers || []).map(i => [i.id, i]));
+  const idMap2 = new Map((bkg2.identifiers || []).map(i => [i.id, i]));
+  const allIdentIds = new Set([...idMap1.keys(), ...idMap2.keys()]);
+  const mergedIdentifiers = [];
+
+  for (const id of allIdentIds) {
+    const i1 = idMap1.get(id);
+    const i2 = idMap2.get(id);
+    if (i1 && !i2) { mergedIdentifiers.push(i1); continue; }
+    if (!i1 && i2) { mergedIdentifiers.push(i2); continue; }
+    const conf1 = i1.confidence || 0;
+    const conf2 = i2.confidence || 0;
+    mergedIdentifiers.push(conf2 > conf1 ? i2 : i1);
+  }
+
+  // Assemble merged BKG
+  const merged = {
+    bkg_version: "1.0",
+    bundle: bkg1.bundle,
+    reference: bkg1.reference || bkg2.reference,
+    modules: mergedModules,
+    identifiers: mergedIdentifiers,
+    annotations: [...(bkg1.annotations || []), ...(bkg2.annotations || [])],
+    enrichments: [...bkg1.enrichments, ...bkg2.enrichments, {
+      timestamp: new Date().toISOString(),
+      technique: "merge",
+      reference_version: null,
+      modules_enriched: mergedModules.length,
+      identifiers_enriched: mergedIdentifiers.length,
+      provenance: `demini-bkg merge: ${conflicts} conflicts resolved by confidence`,
+    }],
+    coverage: {
+      modules_named: mergedModules.filter(m => m.semantic_name).length,
+      modules_total: mergedModules.length,
+      identifiers_semantic: mergedIdentifiers.filter(i => i.state === "semantic").length,
+      identifiers_placeholder: mergedIdentifiers.filter(i => i.state === "placeholder").length,
+      identifiers_raw: mergedIdentifiers.filter(i => i.state === "raw").length,
+      identifier_coverage_semantic: 0,
+      identifier_coverage_touched: 0,
+    },
+  };
+
+  fs.writeFileSync(outputPath, JSON.stringify(merged, null, 2));
+  const mergeElapsed = Date.now() - mergeStart;
+
+  console.log(`\n=== Merge complete ===`);
+  console.log(`Merged modules: ${mergedModules.length} (${merged.coverage.modules_named} named)`);
+  console.log(`Conflicts: ${conflicts} (resolved by confidence)`);
+  console.log(`Identifiers: ${mergedIdentifiers.length}`);
+  console.log(`Elapsed: ${mergeElapsed}ms`);
+  console.log(`\nWrote: ${outputPath}`);
+
+  process.exit(0);
+}
+
+// =====================================================================
+// SUBCOMMAND: diff
+// =====================================================================
+
+if (subcommand === "diff") {
+  const bkg1Path = process.argv[3];
+  const bkg2Path = process.argv[4];
+  if (!bkg1Path || !bkg2Path) { console.error("Usage: demini-bkg diff <bkg1.json> <bkg2.json>"); process.exit(1); }
+
+  console.log("=== demini-bkg diff ===");
+
+  const bkg1 = readBkg(path.resolve(bkg1Path));
+  const bkg2 = readBkg(path.resolve(bkg2Path));
+
+  const map1 = buildModuleMap(bkg1);
+  const map2 = buildModuleMap(bkg2);
+
+  const ids1 = new Set(map1.keys());
+  const ids2 = new Set(map2.keys());
+
+  const added = [...ids2].filter(id => !ids1.has(id));
+  const removed = [...ids1].filter(id => !ids2.has(id));
+  const shared = [...ids1].filter(id => ids2.has(id));
+
+  // Check for modifications in shared modules
+  let nameChanged = 0;
+  let depsChanged = 0;
+  let bytesChanged = 0;
+
+  for (const id of shared) {
+    const m1 = map1.get(id);
+    const m2 = map2.get(id);
+    if (m1.semantic_name !== m2.semantic_name) nameChanged++;
+    if (JSON.stringify(m1.deps_out) !== JSON.stringify(m2.deps_out)) depsChanged++;
+    if (Math.abs(m1.bytes - m2.bytes) > m1.bytes * 0.1) bytesChanged++;
+  }
+
+  console.log(`\nBKG1: ${path.basename(bkg1Path)} — ${bkg1.modules.length} modules`);
+  console.log(`BKG2: ${path.basename(bkg2Path)} — ${bkg2.modules.length} modules`);
+  console.log(`\n--- Module Delta ---`);
+  console.log(`  Added:   ${added.length}`);
+  console.log(`  Removed: ${removed.length}`);
+  console.log(`  Shared:  ${shared.length}`);
+  console.log(`\n--- Modifications (in shared) ---`);
+  console.log(`  Name changed:  ${nameChanged}`);
+  console.log(`  Deps changed:  ${depsChanged}`);
+  console.log(`  Size changed (>10%): ${bytesChanged}`);
+  console.log(`\n--- Coverage Delta ---`);
+  console.log(`  Named: ${bkg1.coverage.modules_named} → ${bkg2.coverage.modules_named} (${bkg2.coverage.modules_named - bkg1.coverage.modules_named >= 0 ? "+" : ""}${bkg2.coverage.modules_named - bkg1.coverage.modules_named})`);
+
+  if (added.length > 0 && added.length <= 20) {
+    console.log(`\n--- Added Modules ---`);
+    for (const id of added.slice(0, 20)) {
+      const m = map2.get(id);
+      console.log(`  ${id} (${m.wrapKind}, ${m.bytes}b)`);
+    }
+  }
+  if (removed.length > 0 && removed.length <= 20) {
+    console.log(`\n--- Removed Modules ---`);
+    for (const id of removed.slice(0, 20)) {
+      const m = map1.get(id);
+      console.log(`  ${id} (${m.wrapKind}, ${m.bytes}b)`);
+    }
+  }
 
   process.exit(0);
 }
