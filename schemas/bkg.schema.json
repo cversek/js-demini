@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://demini.dev/schemas/bkg/1.0",
+  "title": "Bundle Knowledge Graph (BKG)",
+  "description": "Property graph representation of semantic intelligence extracted from JavaScript bundles. Incrementally enrichable from green (structural only) to fully semantic.",
+  "type": "object",
+  "required": ["bkg_version", "bundle", "modules", "coverage"],
+  "properties": {
+    "bkg_version": {
+      "const": "1.0",
+      "description": "Schema version"
+    },
+    "bundle": {
+      "type": "object",
+      "description": "Metadata about the target bundle",
+      "required": ["file", "bundler", "size_bytes", "total_modules", "total_statements", "hash_sha256"],
+      "properties": {
+        "file": { "type": "string", "description": "Bundle filename" },
+        "version": { "type": "string", "description": "Application version if known" },
+        "bundler": { "type": "string", "enum": ["esbuild", "webpack", "rollup", "unknown"] },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "total_modules": { "type": "integer", "minimum": 0 },
+        "total_statements": { "type": "integer", "minimum": 0 },
+        "hash_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "reference": {
+      "type": ["object", "null"],
+      "description": "Optional reference source used for enrichment",
+      "properties": {
+        "file": { "type": "string" },
+        "version": { "type": "string" },
+        "source": { "type": "string", "enum": ["rebundle", "source_map", "manual", "llm"] },
+        "source_map": { "type": "string" },
+        "source_files": { "type": "integer" }
+      }
+    },
+    "modules": {
+      "type": "array",
+      "description": "Module nodes in the knowledge graph",
+      "items": {
+        "type": "object",
+        "required": ["id", "minified_name", "wrapKind", "range", "bytes"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^mod:", "description": "Module ID (mod:{name})" },
+          "minified_name": { "type": "string", "description": "Original minified variable name" },
+          "semantic_name": { "type": ["string", "null"], "description": "Human-readable name if known" },
+          "semantic_confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "semantic_source": {
+            "type": ["string", "null"],
+            "enum": ["cross_version_match", "source_map", "string_inference", "manual", "llm", null]
+          },
+          "source_file": { "type": ["string", "null"], "description": "Original source file path if known" },
+          "wrapKind": { "type": "string", "enum": ["CJS", "ESM", "IMPORT", "RUNTIME", "None"] },
+          "range": {
+            "type": "object",
+            "required": ["startLine", "endLine", "charStart", "charEnd"],
+            "properties": {
+              "startLine": { "type": "integer" },
+              "endLine": { "type": "integer" },
+              "charStart": { "type": "integer" },
+              "charEnd": { "type": "integer" }
+            }
+          },
+          "bytes": { "type": "integer", "minimum": 0 },
+          "stmtCount": { "type": "integer", "minimum": 0 },
+          "strings": { "type": "array", "items": { "type": "string" }, "description": "Unique string literals in module" },
+          "ast_fingerprint": { "type": ["string", "null"], "description": "Structural AST fingerprint for matching" },
+          "exports": { "type": "array", "items": { "type": "string" }, "description": "Exported identifiers" },
+          "deps_out": { "type": "array", "items": { "type": "string" }, "description": "Outgoing dependency module IDs" },
+          "deps_in": { "type": "array", "items": { "type": "string" }, "description": "Incoming dependency module IDs" }
+        }
+      }
+    },
+    "identifiers": {
+      "type": "array",
+      "description": "Variable-level identifier nodes",
+      "items": {
+        "type": "object",
+        "required": ["id", "module", "minified", "state"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^var:", "description": "Identifier ID (var:{mod}:{name})" },
+          "module": { "type": "string", "description": "Parent module ID" },
+          "minified": { "type": "string" },
+          "semantic": { "type": ["string", "null"] },
+          "state": { "type": "string", "enum": ["raw", "placeholder", "semantic"] },
+          "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+          "source": { "type": ["string", "null"] },
+          "role": { "type": "string", "enum": ["variable", "parameter", "function", "class", "import"] }
+        }
+      }
+    },
+    "annotations": {
+      "type": "array",
+      "description": "First-class BKG annotation entries",
+      "items": {
+        "type": "object",
+        "required": ["type", "module", "text"],
+        "properties": {
+          "type": { "type": "string", "enum": ["source", "manual", "inferred"] },
+          "module": { "type": "string" },
+          "line": { "type": ["integer", "null"] },
+          "text": { "type": "string" },
+          "origin": { "type": ["object", "null"] }
+        }
+      }
+    },
+    "enrichments": {
+      "type": "array",
+      "description": "Log of enrichment operations applied to this BKG",
+      "items": {
+        "type": "object",
+        "required": ["timestamp", "technique"],
+        "properties": {
+          "timestamp": { "type": "string", "format": "date-time" },
+          "technique": { "type": "string" },
+          "reference_version": { "type": ["string", "null"] },
+          "modules_enriched": { "type": "integer" },
+          "identifiers_enriched": { "type": "integer" },
+          "provenance": { "type": "string" }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "description": "Current knowledge coverage statistics",
+      "required": ["modules_named", "modules_total"],
+      "properties": {
+        "modules_named": { "type": "integer" },
+        "modules_total": { "type": "integer" },
+        "identifiers_semantic": { "type": "integer" },
+        "identifiers_placeholder": { "type": "integer" },
+        "identifiers_raw": { "type": "integer" },
+        "identifier_coverage_semantic": { "type": "number", "minimum": 0, "maximum": 1 },
+        "identifier_coverage_touched": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}
