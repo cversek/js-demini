@@ -24,7 +24,7 @@ import { readBkg, buildModuleMap } from "./demini-utils.js";
 
 const subcommand = process.argv[2];
 
-if (!subcommand || !["match", "propagate", "apply", "merge", "diff", "stats"].includes(subcommand)) {
+if (!subcommand || !["match", "propagate", "apply", "merge", "diff", "enrich-sourcemap", "stats"].includes(subcommand)) {
   console.error("demini-bkg: Bundle Knowledge Graph operations");
   console.error("");
   console.error("Subcommands:");
@@ -33,6 +33,7 @@ if (!subcommand || !["match", "propagate", "apply", "merge", "diff", "stats"].in
   console.error("  apply <bkg> <split-dir> [-o outdir]                  — Annotate modules with BKG");
   console.error("  merge <bkg1> <bkg2> [-o output.bkg]                  — Combine BKGs (high-conf wins)");
   console.error("  diff <bkg1> <bkg2>                                   — Compare BKG versions");
+  console.error("  enrich-sourcemap <bkg> <bundle.js> <map> [-o out]    — Enrich from source map");
   console.error("  stats <bkg>                                          — Coverage report");
   process.exit(1);
 }
@@ -515,6 +516,227 @@ if (subcommand === "diff") {
       console.log(`  ${id} (${m.wrapKind}, ${m.bytes}b)`);
     }
   }
+
+  process.exit(0);
+}
+
+// =====================================================================
+// SUBCOMMAND: enrich-sourcemap
+// =====================================================================
+
+if (subcommand === "enrich-sourcemap") {
+  const bkgPath = process.argv[3];
+  const bundlePath = process.argv[4];
+  const mapPath = process.argv[5];
+
+  if (!bkgPath || !bundlePath || !mapPath) {
+    console.error("Usage: demini-bkg enrich-sourcemap <bkg.json> <bundle.js> <bundle.js.map> [-o out.bkg]");
+    process.exit(1);
+  }
+
+  const oIdx = process.argv.indexOf("-o");
+  const outputPath = (oIdx !== -1 && process.argv[oIdx + 1])
+    ? path.resolve(process.argv[oIdx + 1])
+    : path.resolve(bkgPath).replace(/\.json$/, ".enriched.json");
+
+  console.log("=== demini-bkg enrich-sourcemap ===");
+  console.log(`BKG:    ${bkgPath}`);
+  console.log(`Bundle: ${bundlePath}`);
+  console.log(`Map:    ${mapPath}`);
+  console.log(`Output: ${outputPath}`);
+  console.log("");
+
+  const enrichStart = Date.now();
+  const bkg = readBkg(path.resolve(bkgPath));
+  const modMap = buildModuleMap(bkg);
+  const sourceMap = JSON.parse(fs.readFileSync(path.resolve(mapPath), "utf8"));
+  const bundleCode = fs.readFileSync(path.resolve(bundlePath), "utf8");
+
+  // Build line→offset table for bundle
+  const lineOffsets = [0];
+  for (let i = 0; i < bundleCode.length; i++) {
+    if (bundleCode[i] === '\n') lineOffsets.push(i + 1);
+  }
+
+  const sources = sourceMap.sources || [];
+  const names = sourceMap.names || [];
+  console.log(`Sources: ${sources.length}`);
+  console.log(`Names: ${names.length}`);
+
+  // VLQ decode
+  const VLQ_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const VLQ_LOOKUP = {};
+  for (let i = 0; i < VLQ_CHARS.length; i++) VLQ_LOOKUP[VLQ_CHARS[i]] = i;
+
+  function decodeVLQ(str) {
+    const segments = [];
+    let i = 0;
+    while (i < str.length) {
+      let value = 0, shift = 0, digit;
+      do {
+        digit = VLQ_LOOKUP[str[i++]];
+        value |= (digit & 31) << shift;
+        shift += 5;
+      } while (digit & 32);
+      segments.push(value & 1 ? -(value >> 1) : value >> 1);
+    }
+    return segments;
+  }
+
+  // Decode all mappings
+  const mappings = sourceMap.mappings || "";
+  const decoded = []; // {genLine, genCol, sourceIdx, sourceLine, sourceCol, nameIdx}
+
+  let genLine = 0, genCol = 0, sourceIdx = 0, sourceLine = 0, sourceCol = 0, nameIdx = 0;
+
+  for (const line of mappings.split(";")) {
+    genCol = 0;
+    if (line.length === 0) { genLine++; continue; }
+    for (const seg of line.split(",")) {
+      if (seg.length === 0) continue;
+      const fields = decodeVLQ(seg);
+      genCol += fields[0];
+      if (fields.length >= 4) {
+        sourceIdx += fields[1];
+        sourceLine += fields[2];
+        sourceCol += fields[3];
+        const entry = { genLine, genCol, sourceIdx, sourceLine, sourceCol, nameIdx: -1 };
+        if (fields.length >= 5) {
+          nameIdx += fields[4];
+          entry.nameIdx = nameIdx;
+        }
+        decoded.push(entry);
+      }
+    }
+    genLine++;
+  }
+
+  console.log(`Decoded ${decoded.length} mappings`);
+  const withNames = decoded.filter(d => d.nameIdx >= 0);
+  console.log(`Mappings with names: ${withNames.length}`);
+
+  // Map positions to absolute offsets in bundle
+  for (const d of decoded) {
+    d.offset = (lineOffsets[d.genLine] || 0) + d.genCol;
+  }
+
+  // Associate each mapping with a BKG module (by charStart/charEnd range)
+  // Build sorted module ranges for binary search
+  const moduleRanges = bkg.modules
+    .filter(m => m.range && m.range.charStart != null)
+    .map(m => ({ id: m.id, start: m.range.charStart, end: m.range.charEnd }))
+    .sort((a, b) => a.start - b.start);
+
+  function findModule(offset) {
+    let lo = 0, hi = moduleRanges.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (offset < moduleRanges[mid].start) hi = mid - 1;
+      else if (offset >= moduleRanges[mid].end) lo = mid + 1;
+      else return moduleRanges[mid].id;
+    }
+    return null;
+  }
+
+  // Collect per-module: source files and names
+  const moduleSourceFiles = {}; // modId → {file: count}
+  const moduleNames = {};       // modId → [{minified, semantic}]
+
+  for (const d of decoded) {
+    const modId = findModule(d.offset);
+    if (!modId) continue;
+
+    // Source file attribution
+    if (d.sourceIdx >= 0 && d.sourceIdx < sources.length) {
+      if (!moduleSourceFiles[modId]) moduleSourceFiles[modId] = {};
+      const src = sources[d.sourceIdx];
+      moduleSourceFiles[modId][src] = (moduleSourceFiles[modId][src] || 0) + 1;
+    }
+
+    // Name attribution
+    if (d.nameIdx >= 0 && d.nameIdx < names.length) {
+      if (!moduleNames[modId]) moduleNames[modId] = [];
+      moduleNames[modId].push({
+        semantic: names[d.nameIdx],
+        offset: d.offset,
+      });
+    }
+  }
+
+  // Enrich BKG modules
+  let modulesWithSource = 0;
+  let modulesWithNames = 0;
+  let totalNamePairs = 0;
+
+  for (const mod of bkg.modules) {
+    // Source file: pick the most frequent
+    const srcFiles = moduleSourceFiles[mod.id];
+    if (srcFiles) {
+      const best = Object.entries(srcFiles).sort((a, b) => b[1] - a[1])[0];
+      mod.source_file = best[0];
+      // Derive semantic name from source file path
+      const fname = best[0].replace(/.*\//, "").replace(/\.[^.]+$/, "");
+      if (!mod.semantic_name || mod.semantic_source === "propagation") {
+        mod.semantic_name = fname;
+        mod.semantic_confidence = 0.95;
+        mod.semantic_source = "source_map_file";
+      }
+      modulesWithSource++;
+    }
+
+    // Names: add to identifiers
+    const modNames = moduleNames[mod.id];
+    if (modNames) {
+      modulesWithNames++;
+      totalNamePairs += modNames.length;
+    }
+  }
+
+  // Populate identifiers from name mappings
+  const identifiers = [];
+  for (const [modId, nameList] of Object.entries(moduleNames)) {
+    const seen = new Set();
+    for (const n of nameList) {
+      if (seen.has(n.semantic)) continue;
+      seen.add(n.semantic);
+      identifiers.push({
+        id: `var:${modId}:${n.semantic}`,
+        module: modId,
+        minified: "",  // Would need the minified name from bundle at that offset
+        semantic: n.semantic,
+        state: "semantic",
+        confidence: 1.0,
+        source: "source_map",
+        role: "variable",
+      });
+    }
+  }
+  bkg.identifiers = identifiers;
+
+  // Update coverage
+  bkg.coverage.modules_named = bkg.modules.filter(m => m.semantic_name).length;
+  bkg.coverage.identifiers_semantic = identifiers.length;
+
+  // Log enrichment
+  bkg.enrichments.push({
+    timestamp: new Date().toISOString(),
+    technique: "source_map_enrichment",
+    reference_version: null,
+    modules_enriched: modulesWithSource,
+    identifiers_enriched: identifiers.length,
+    provenance: `demini-bkg enrich-sourcemap: ${sources.length} sources, ${names.length} names, ${decoded.length} mappings`,
+  });
+
+  fs.writeFileSync(outputPath, JSON.stringify(bkg, null, 2));
+  const enrichElapsed = Date.now() - enrichStart;
+
+  console.log(`\n=== Enrichment complete ===`);
+  console.log(`Modules with source_file: ${modulesWithSource}/${bkg.modules.length}`);
+  console.log(`Modules with names: ${modulesWithNames}`);
+  console.log(`Unique identifiers: ${identifiers.length}`);
+  console.log(`Total name mappings: ${totalNamePairs}`);
+  console.log(`Elapsed: ${enrichElapsed}ms`);
+  console.log(`\nWrote: ${outputPath}`);
 
   process.exit(0);
 }
