@@ -653,11 +653,23 @@ if (subcommand === "enrich-sourcemap") {
       moduleSourceFiles[modId][src] = (moduleSourceFiles[modId][src] || 0) + 1;
     }
 
-    // Name attribution
+    // Name attribution — extract minified identifier at this offset
     if (d.nameIdx >= 0 && d.nameIdx < names.length) {
       if (!moduleNames[modId]) moduleNames[modId] = [];
+      // Extract the JS identifier starting at this offset in the bundle
+      let minName = "";
+      let pos = d.offset;
+      if (pos < bundleCode.length) {
+        // JS identifier: starts with letter/_/$, continues with letter/digit/_/$
+        const ch = bundleCode[pos];
+        if (/[a-zA-Z_$]/.test(ch)) {
+          const idMatch = bundleCode.slice(pos, pos + 100).match(/^[a-zA-Z_$][a-zA-Z0-9_$]*/);
+          if (idMatch) minName = idMatch[0];
+        }
+      }
       moduleNames[modId].push({
         semantic: names[d.nameIdx],
+        minified: minName,
         offset: d.offset,
       });
     }
@@ -692,17 +704,19 @@ if (subcommand === "enrich-sourcemap") {
     }
   }
 
-  // Populate identifiers from name mappings
+  // Populate identifiers from name mappings (deduplicate by minified→semantic pair)
   const identifiers = [];
   for (const [modId, nameList] of Object.entries(moduleNames)) {
     const seen = new Set();
     for (const n of nameList) {
-      if (seen.has(n.semantic)) continue;
-      seen.add(n.semantic);
+      if (!n.minified) continue;  // Skip if couldn't extract minified name
+      const key = `${n.minified}→${n.semantic}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       identifiers.push({
-        id: `var:${modId}:${n.semantic}`,
+        id: `var:${modId}:${n.minified}`,
         module: modId,
-        minified: "",  // Would need the minified name from bundle at that offset
+        minified: n.minified,
         semantic: n.semantic,
         state: "semantic",
         confidence: 1.0,
