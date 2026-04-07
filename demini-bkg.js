@@ -1171,6 +1171,74 @@ for (const tm of target.modules) {
 
 console.log(`AST fingerprint: ${fpMatchCount} matches`);
 
+// --- Technique 4: Identifier Usage Fingerprinting (for remaining unmatched) ---
+// Matches modules by comparing identifier usage patterns: property accesses,
+// call signatures, and string proximity. Works even when AST structure differs.
+
+console.log("\n--- Technique 4: Identifier Fingerprinting ---");
+
+let idFpMatchCount = 0;
+
+for (const tm of target.modules) {
+  if (matches.has(tm.id)) continue;
+  if (!tm.strings || tm.strings.length === 0) continue;
+
+  // Build a feature set from the module's strings (proxy for usage patterns)
+  // Full AST fingerprinting would require parsing — here we use string-based features
+  const tmFeatures = new Set(tm.strings.filter(s => s.length >= 6).map(s => s.slice(0, 30)));
+  if (tmFeatures.size < 3) continue;
+
+  // Must have at least one matched neighbor
+  const hasMatchedNeighbor = tm.deps_out.some(d => matches.has(d)) ||
+                              tm.deps_in.some(d => matches.has(d));
+  if (!hasMatchedNeighbor) continue;
+
+  let bestScore = 0;
+  let bestRefId = null;
+  let secondBest = 0;
+
+  for (const rm of ref.modules) {
+    if (reverseMatches.has(rm.id)) continue;
+    if (!rm.strings || rm.strings.length === 0) continue;
+
+    const rmFeatures = new Set(rm.strings.filter(s => s.length >= 6).map(s => s.slice(0, 30)));
+    if (rmFeatures.size < 3) continue;
+
+    // Jaccard on string features
+    let intersection = 0;
+    for (const f of tmFeatures) if (rmFeatures.has(f)) intersection++;
+    const union = tmFeatures.size + rmFeatures.size - intersection;
+    const jaccard = union > 0 ? intersection / union : 0;
+
+    // Boost if structural similarity (stmtCount, wrapKind, bytes)
+    let structBoost = 0;
+    if (tm.stmtCount === rm.stmtCount) structBoost += 0.05;
+    if (tm.wrapKind === rm.wrapKind) structBoost += 0.03;
+    if (tm.bytes > 0 && rm.bytes > 0 &&
+        Math.abs(tm.bytes - rm.bytes) / Math.max(tm.bytes, rm.bytes) < 0.3)
+      structBoost += 0.05;
+
+    const score = jaccard + structBoost;
+    if (score > bestScore) {
+      secondBest = bestScore;
+      bestScore = score;
+      bestRefId = rm.id;
+    } else if (score > secondBest) {
+      secondBest = score;
+    }
+  }
+
+  // Lower threshold than string seeds (0.15) — these are more constrained by neighbor requirement
+  if (bestScore >= 0.10 && bestRefId &&
+      (secondBest === 0 || bestScore >= secondBest * 1.3)) {
+    matches.set(tm.id, { refId: bestRefId, confidence: Math.min(0.85, bestScore + 0.3), technique: "identifier_fingerprint" });
+    reverseMatches.set(bestRefId, tm.id);
+    idFpMatchCount++;
+  }
+}
+
+console.log(`Identifier fingerprint: ${idFpMatchCount} matches`);
+
 // --- Apply matches to target BKG ---
 
 const totalMatched = matches.size;
@@ -1181,6 +1249,7 @@ console.log(`Total matched: ${totalMatched}/${target.modules.length} (${matchPct
 console.log(`  String seeds: ${stringSeedCount}`);
 console.log(`  Graph propagation: ${graphPropCount}`);
 console.log(`  AST fingerprint: ${fpMatchCount}`);
+console.log(`  Identifier fingerprint: ${idFpMatchCount}`);
 
 // Enrich the target BKG with match results
 for (const [targetId, matchInfo] of matches) {
