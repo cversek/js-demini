@@ -33,6 +33,7 @@ const bkgPath = getArg("--bkg", null);
 const refDir = getArg("--reference", null);
 const model = getArg("--model", "qwen2.5-coder:7b");
 const mode = getArg("--mode", refDir ? "paired" : "standalone");
+const groundTruthPath = getArg("--ground-truth", null);
 const oIdx = args.indexOf("-o");
 const outputPath = oIdx !== -1 && args[oIdx + 1] ? path.resolve(args[oIdx + 1]) : "infer_pairs.json";
 
@@ -46,6 +47,7 @@ if (!splitDir) {
   console.error("  --reference <split-dir>  Reference split dir (semantic names)");
   console.error("  --model <name>           Ollama model (default: qwen2.5-coder:7b)");
   console.error("  --mode paired|standalone Mode (default: auto-detect from --reference)");
+  console.error("  --ground-truth <pairs.json> Filter: reject pairs conflicting with ground truth");
   console.error("  -o <output.json>         Output rename pairs (default: infer_pairs.json)");
   process.exit(1);
 }
@@ -221,13 +223,35 @@ async function main() {
     }
   }
 
+  // Ground-truth filtering: reject pairs that conflict with known-good mappings
+  let outputPairs = allPairs;
+  if (groundTruthPath) {
+    const gt = JSON.parse(fs.readFileSync(path.resolve(groundTruthPath), "utf8"));
+    const gtMap = new Map();
+    for (const p of gt) gtMap.set(`${p.module}:${p.minified}`, p.semantic);
+
+    let kept = 0, rejected = 0, novel = 0;
+    outputPairs = allPairs.filter(p => {
+      const key = `${p.module}:${p.minified}`;
+      if (gtMap.has(key)) {
+        if (gtMap.get(key) === p.semantic) { kept++; return true; }
+        else { rejected++; return false; } // Conflicts with ground truth
+      }
+      novel++; return true; // Novel — keep
+    });
+
+    console.error("");
+    console.error(`Ground-truth filter: kept=${kept} novel=${novel} rejected=${rejected}`);
+    console.error(`Quality: ${((kept / Math.max(kept + rejected, 1)) * 100).toFixed(1)}% accuracy on verifiable`);
+  }
+
   // Final save
-  fs.writeFileSync(outputPath, JSON.stringify(allPairs, null, 2));
+  fs.writeFileSync(outputPath, JSON.stringify(outputPairs, null, 2));
 
   console.error("");
   console.error("=== demini-infer complete ===");
   console.error(`Modules: ${moduleList.length}`);
-  console.error(`Names inferred: ${totalNames}`);
+  console.error(`Names inferred: ${totalNames}${groundTruthPath ? ` (${outputPairs.length} after filtering)` : ""}`);
   console.error(`JSON failures: ${jsonFails}`);
   console.error(`Time: ${(totalTime / 60).toFixed(1)} min (${(totalTime / moduleList.length).toFixed(1)}s/mod)`);
   console.error(`Output: ${outputPath}`);
