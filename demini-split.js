@@ -113,7 +113,7 @@ if (code.startsWith("#!")) {
 }
 
 const acornSettings = {
-  ecmaVersion: 2025,
+  ecmaVersion: "latest",
   sourceType: "module",
   locations: true,
 };
@@ -196,13 +196,13 @@ for (const mod of traceData.modules) {
   // Verify the extracted module parses independently
   let parseable = false;
   try {
-    acorn.parse(moduleCode, { ecmaVersion: 2025, sourceType: "module" });
+    acorn.parse(moduleCode, { ecmaVersion: "latest", sourceType: "module" });
     parseable = true;
     parseSuccessCount++;
   } catch {
     // Try as script (some CJS modules aren't valid ESM)
     try {
-      acorn.parse(moduleCode, { ecmaVersion: 2025, sourceType: "script" });
+      acorn.parse(moduleCode, { ecmaVersion: "latest", sourceType: "script" });
       parseable = true;
       parseSuccessCount++;
     } catch (e) {

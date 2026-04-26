@@ -120,7 +120,7 @@ if (code.startsWith("#!")) {
   code = code.slice(code.indexOf("\n") + 1);
 }
 
-const ast = acorn.parse(code, { ecmaVersion: 2025, sourceType: "module", locations: true });
+const ast = acorn.parse(code, { ecmaVersion: "latest", sourceType: "module", locations: true });
 
 // --- Build module ID map ---
 
@@ -149,7 +149,7 @@ for (const mod of traceData.modules) {
 function extractStringsFromCode(moduleCode) {
   const strings = new Set();
   try {
-    const moduleAst = acorn.parse(moduleCode, { ecmaVersion: 2025, sourceType: "module" });
+    const moduleAst = acorn.parse(moduleCode, { ecmaVersion: "latest", sourceType: "module" });
     walk.simple(moduleAst, {
       Literal(node) {
         if (typeof node.value === "string" && node.value.length >= 2 && node.value.length <= 200) {
@@ -172,7 +172,7 @@ function extractStringsFromCode(moduleCode) {
 
 function computeAstFingerprint(moduleCode) {
   try {
-    const moduleAst = acorn.parse(moduleCode, { ecmaVersion: 2025, sourceType: "module" });
+    const moduleAst = acorn.parse(moduleCode, { ecmaVersion: "latest", sourceType: "module" });
     // Depth-limited type sequence — captures structural skeleton
     const types = [];
     walk.simple(moduleAst, {
