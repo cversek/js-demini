@@ -14,12 +14,17 @@
  *   3. Score bundles by size + structural signal (IIFE wrapper, tengu/sentinel
  *      strings, function density)
  *   4. Extract the highest-scoring bundle (or all bundles with --all)
+ *   5. By default, unwrap the outer CommonJS IIFE wrapper if present
+ *      (`(function(exports, require, module, __filename, __dirname) {...})`)
+ *      so the inner statements become top-level for the rest of the pipeline.
+ *      Use --raw to skip this and preserve the wrapped bundle bytes-as-found.
  *
  * Usage:
  *   demini-unpack <input.binary> [output-dir]
  *   demini-unpack --all <input.binary> [output-dir]
  *   demini-unpack --bundle-index <N> <input.binary> [output-dir]
  *   demini-unpack --info <input.binary>           # report only, no extraction
+ *   demini-unpack --raw <input.binary>            # skip CJS-IIFE unwrap
  *
  * Output:
  *   <output-dir>/unpacked-<basename>.js           # main bundle (default)
@@ -30,18 +35,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import * as acorn from "acorn";
 
 // --- Argument parsing ---
 
 const args = process.argv.slice(2);
 let mode = "main";       // "main" | "all" | "info" | "index"
 let bundleIndex = null;
+let unwrap = true;       // default: strip outer CJS IIFE; --raw to disable
 let positional = [];
 
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === "--all") mode = "all";
   else if (a === "--info") mode = "info";
+  else if (a === "--raw") unwrap = false;
   else if (a === "--bundle-index") {
     mode = "index";
     bundleIndex = parseInt(args[++i], 10);
@@ -61,12 +69,14 @@ function printHelp() {
   console.error("  demini-unpack --all <input.binary> [output-dir]");
   console.error("  demini-unpack --bundle-index <N> <input.binary> [output-dir]");
   console.error("  demini-unpack --info <input.binary>");
+  console.error("  demini-unpack --raw <input.binary>");
   console.error("");
   console.error("Modes:");
   console.error("  default        Extract the highest-scoring bundle (largest + most signals)");
   console.error("  --all          Extract every detected bundle");
   console.error("  --bundle-index Extract a specific bundle by 0-based index (sorted by offset)");
   console.error("  --info         Report findings without writing files");
+  console.error("  --raw          Preserve outer CJS IIFE wrapper (default: strip if present)");
 }
 
 const inputPath = positional[0];
@@ -303,6 +313,56 @@ if (mode === "all") {
   toExtract = [bestIdx];
 }
 
+// --- Optional CJS IIFE unwrap ---
+//
+// Bun --compile output wraps the entire bundle in a single IIFE:
+//   (function(exports, require, module, __filename, __dirname) { ...body... })
+//
+// Downstream demini stages expect top-level statements representing modules.
+// With the wrapper present, classify/trace/split see one statement and produce
+// one giant "module". We strip the wrapper by default so the inner statements
+// become top-level. Use --raw to keep the wrapped form.
+
+const CJS_PARAMS = ["exports", "require", "module", "__filename", "__dirname"];
+
+function tryUnwrap(jsText) {
+  // Returns { wrapped: bool, output: string, paramNames?: string[] }
+  // Conservative: only unwraps when AST shape exactly matches the CJS pattern.
+  let ast;
+  try {
+    ast = acorn.parse(jsText, { ecmaVersion: "latest", sourceType: "module", locations: true });
+  } catch {
+    return { wrapped: false, output: jsText };
+  }
+  if (ast.body.length !== 1) return { wrapped: false, output: jsText };
+  const stmt = ast.body[0];
+  if (stmt.type !== "ExpressionStatement") return { wrapped: false, output: jsText };
+  let expr = stmt.expression;
+  if (expr.type === "CallExpression") expr = expr.callee;
+  if (expr.type !== "FunctionExpression" && expr.type !== "ArrowFunctionExpression") {
+    return { wrapped: false, output: jsText };
+  }
+  if (expr.params.length !== CJS_PARAMS.length) return { wrapped: false, output: jsText };
+  for (let i = 0; i < CJS_PARAMS.length; i++) {
+    if (expr.params[i].type !== "Identifier" || expr.params[i].name !== CJS_PARAMS[i]) {
+      return { wrapped: false, output: jsText };
+    }
+  }
+  // Recover leading comments before the wrapper (e.g. `// @bun ...` header)
+  const headerMatch = jsText.match(/^(\/\/.*\n+)+/);
+  const header = headerMatch ? headerMatch[0] : "";
+  // Body span: { ... } — strip the surrounding braces
+  const inner = jsText
+    .slice(expr.body.start + 1, expr.body.end - 1)
+    .replace(/^\n+/, "")
+    .replace(/\n+$/, "");
+  return {
+    wrapped: true,
+    output: header + inner + "\n",
+    paramNames: expr.params.map(p => p.name),
+  };
+}
+
 // --- Write outputs ---
 
 fs.mkdirSync(outputDir, { recursive: true });
@@ -312,13 +372,31 @@ const outputs = [];
 
 for (const idx of toExtract) {
   const b = bundles[idx];
-  const slice = binaryBuf.subarray(b.offset, b.end);
+  const sliceBuf = binaryBuf.subarray(b.offset, b.end);
   const suffix = toExtract.length > 1 ? `.${idx}` : "";
   const outName = `unpacked-${inputBasename}${suffix}.js`;
   const outPath = path.join(outputDir, outName);
-  fs.writeFileSync(outPath, slice);
-  outputs.push({ idx, path: outPath, size: slice.length, ...b });
-  console.log(`Wrote: ${outPath} (${(slice.length / 1024 / 1024).toFixed(2)}MB, idx=${idx})`);
+
+  let writeBuf = sliceBuf;
+  let unwrapInfo = { applied: false };
+  if (unwrap) {
+    const text = sliceBuf.toString("utf8");
+    const result = tryUnwrap(text);
+    if (result.wrapped) {
+      writeBuf = Buffer.from(result.output, "utf8");
+      unwrapInfo = {
+        applied: true,
+        param_names: result.paramNames,
+        before_bytes: sliceBuf.length,
+        after_bytes: writeBuf.length,
+      };
+    }
+  }
+
+  fs.writeFileSync(outPath, writeBuf);
+  outputs.push({ idx, path: outPath, size: writeBuf.length, unwrap: unwrapInfo, ...b });
+  const unwrapTag = unwrapInfo.applied ? " [unwrapped]" : (unwrap ? "" : " [raw]");
+  console.log(`Wrote: ${outPath} (${(writeBuf.length / 1024 / 1024).toFixed(2)}MB, idx=${idx})${unwrapTag}`);
 }
 
 // --- Sidecar provenance ---
@@ -351,10 +429,12 @@ const sidecar = {
     var_density: b.var_density,
     require_calls: b.require_calls,
   })),
+  unwrap: { default_enabled: true, requested: unwrap },
   extracted: outputs.map(o => ({
     index: o.idx,
     path: o.path,
     size_bytes: o.size,
+    unwrap: o.unwrap,
   })),
   elapsed_ms: Date.now() - startTime,
 };
