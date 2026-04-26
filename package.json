@@ -13,6 +13,7 @@
     "demini-trace": "./demini-trace.js",
     "demini-split": "./demini-split.js",
     "demini-extract": "./demini-extract.js",
+    "demini-unpack": "./demini-unpack.js",
     "demini-bkg": "./demini-bkg.js",
     "demini-chain": "./demini-chain.js",
     "demini-infer": "./demini-infer.js"
