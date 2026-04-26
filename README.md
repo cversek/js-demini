@@ -123,7 +123,8 @@ node demini-bkg.js match <target.bkg> <ref.bkg>     — cross-version module mat
 node demini-bkg.js propagate <bkg>                    — spread names via dependency graph
 node demini-bkg.js apply <bkg> <split-dir>            — annotate modules with BKG knowledge
 node demini-bkg.js merge <bkg1> <bkg2>                — combine BKGs (highest confidence wins)
-node demini-bkg.js diff <bkg1> <bkg2>                 — compare BKG versions (module delta)
+node demini-bkg.js diff <bkg1> <bkg2>                 — compare BKG versions (literal id)
+node demini-bkg.js evolve <m1.bkg> ... <mN.bkg>       — cross-pair evolution report (filters matcher noise)
 node demini-bkg.js stats <bkg>                        — coverage report
 ```
 
@@ -132,6 +133,8 @@ node demini-bkg.js stats <bkg>                        — coverage report
 **propagate** spreads semantic names from matched modules to their unmatched neighbors. Typically adds 10-25% more named modules.
 
 **apply** injects BKG metadata as header comments into split module files — match status, confidence, dependencies, key strings.
+
+**evolve** consumes a sequence of matched BKGs (typically `match` outputs between adjacent version pairs) and reports per-pair real-new modules. Naive per-pair unmatched sets mix true new features with matcher noise — stable modules whose minified names shifted enough to evade fingerprinting. evolve content-hashes each unmatched module and filters out hashes that recur in `--noise-threshold` of N pairs (default: 5/6). Output is both a human-readable summary and an optional JSON report via `-o`.
 
 See `docs/matching-techniques.md` for algorithm details.
 
