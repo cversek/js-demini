@@ -20,13 +20,14 @@ import fs from "node:fs";
 import path from "node:path";
 import * as acorn from "acorn";
 import * as walk from "acorn-walk";
+import { createHash } from "node:crypto";
 import { readBkg, buildModuleMap } from "./demini-utils.js";
 
 // --- Argument Parsing ---
 
 const subcommand = process.argv[2];
 
-if (!subcommand || !["match", "propagate", "apply", "merge", "diff", "enrich-sourcemap", "align", "stats"].includes(subcommand)) {
+if (!subcommand || !["match", "propagate", "apply", "merge", "diff", "evolve", "enrich-sourcemap", "align", "stats"].includes(subcommand)) {
   console.error("demini-bkg: Bundle Knowledge Graph operations");
   console.error("");
   console.error("Subcommands:");
@@ -36,7 +37,9 @@ if (!subcommand || !["match", "propagate", "apply", "merge", "diff", "enrich-sou
   console.error("  propagate <bkg> [-o output.bkg]                      — Spread names via deps");
   console.error("  apply <bkg> <split-dir> [-o outdir]                  — Annotate modules with BKG");
   console.error("  merge <bkg1> <bkg2> [-o output.bkg]                  — Combine BKGs (high-conf wins)");
-  console.error("  diff <bkg1> <bkg2>                                   — Compare BKG versions");
+  console.error("  diff <bkg1> <bkg2>                                   — Compare BKG versions (literal id)");
+  console.error("  evolve <m1.bkg> <m2.bkg> ... <mN.bkg> [-o report.json]");
+  console.error("                                                       — Cross-pair evolution report (filters matcher noise)");
   console.error("  enrich-sourcemap <bkg> <bundle.js> <map> [-o out]    — Enrich from source map");
   console.error("  stats <bkg>                                          — Coverage report");
   process.exit(1);
@@ -519,6 +522,150 @@ if (subcommand === "diff") {
       const m = map1.get(id);
       console.log(`  ${id} (${m.wrapKind}, ${m.bytes}b)`);
     }
+  }
+
+  process.exit(0);
+}
+
+// =====================================================================
+// SUBCOMMAND: evolve — cross-pair evolution report with matcher-noise filter
+// =====================================================================
+//
+// Takes a sequence of MATCHED BKGs (output of `demini-bkg match`) — typically
+// representing adjacent version pairs — and reports per-pair "real new"
+// modules. Naive per-pair unmatched sets include both real new features AND
+// matcher-noise (stable modules whose minified names shifted enough to evade
+// fingerprinting). evolve hashes each unmatched module by content (sorted
+// strings + AST fingerprint + quantized bytes) and filters out hashes that
+// recur in 5+ pairs across the input set — those are noise, not change.
+
+if (subcommand === "evolve") {
+  const inputs = [];
+  let outputPath = null;
+  let recurThreshold = null;  // auto: ceil(N * 5/6) if not set
+
+  for (let i = 3; i < process.argv.length; i++) {
+    const a = process.argv[i];
+    if (a === "-o") outputPath = process.argv[++i];
+    else if (a === "--noise-threshold") recurThreshold = parseInt(process.argv[++i], 10);
+    else inputs.push(path.resolve(a));
+  }
+
+  if (inputs.length < 2) {
+    console.error("Usage: demini-bkg evolve <matched1.bkg> <matched2.bkg> ... <matchedN.bkg> [-o report.json] [--noise-threshold N]");
+    console.error("");
+    console.error("Each input is a matched BKG (output of `demini-bkg match`).");
+    console.error("Reports per-pair real-new modules with matcher-noise filtered out.");
+    console.error("Default noise threshold: ceil(N * 5/6) — recurs in 5+ of every 6 pairs.");
+    process.exit(1);
+  }
+
+  console.log(`=== demini-bkg evolve ===`);
+  console.log(`Pairs: ${inputs.length}`);
+  inputs.forEach((p, i) => console.log(`  [${i}] ${path.basename(p)}`));
+  console.log("");
+
+  // Load all matched BKGs and pull unmatched modules per pair
+  const perPair = inputs.map(p => {
+    const bkg = readBkg(p);
+    const total = bkg.modules.length;
+    const matched = bkg.modules.filter(m => m.semantic_name).length;
+    const unmatched = bkg.modules.filter(m => !m.semantic_name);
+    return { path: p, total, matched, unmatched, bundle: bkg.bundle };
+  });
+
+  // Content-hash each unmatched module
+  function contentHash(m) {
+    const strings = (m.strings || []).slice().sort();
+    const fp = m.ast_fingerprint || "";
+    const bytesBucket = Math.floor((m.bytes || 0) / 256) * 256;
+    const h = createHash("sha256");
+    h.update(JSON.stringify([strings, fp, bytesBucket]));
+    return h.digest("hex").slice(0, 16);
+  }
+
+  // Track which hashes appear in which pairs
+  const hashToPairs = new Map();  // hash -> Set of pair-indices
+  perPair.forEach((pair, i) => {
+    for (const m of pair.unmatched) {
+      const h = contentHash(m);
+      if (!hashToPairs.has(h)) hashToPairs.set(h, new Set());
+      hashToPairs.get(h).add(i);
+    }
+  });
+
+  if (recurThreshold === null) {
+    // Default: hash recurring in 5+ of N pairs is noise (works for the canonical 6-pair case)
+    recurThreshold = Math.max(2, Math.ceil(inputs.length * 5 / 6));
+  }
+  const noiseHashes = new Set();
+  for (const [h, pairs] of hashToPairs) {
+    if (pairs.size >= recurThreshold) noiseHashes.add(h);
+  }
+
+  console.log(`Total unique unmatched-module hashes: ${hashToPairs.size}`);
+  console.log(`Noise threshold: ${recurThreshold}/${inputs.length} pairs`);
+  console.log(`Noise hashes (filtered out): ${noiseHashes.size}`);
+  console.log(`Pair-specific hashes (real changes): ${hashToPairs.size - noiseHashes.size}`);
+  console.log("");
+
+  // Per-pair real-new analysis
+  const report = {
+    tool: "demini-bkg evolve",
+    timestamp: new Date().toISOString(),
+    inputs: inputs.map(p => path.basename(p)),
+    noise_threshold: recurThreshold,
+    total_unique_hashes: hashToPairs.size,
+    noise_hashes_filtered: noiseHashes.size,
+    pairs: [],
+  };
+
+  perPair.forEach((pair, i) => {
+    const realNew = pair.unmatched.filter(m => !noiseHashes.has(contentHash(m)));
+    const realNewSorted = realNew.slice().sort((a, b) => (b.bytes || 0) - (a.bytes || 0));
+    const newByWrap = {};
+    for (const m of realNew) newByWrap[m.wrapKind] = (newByWrap[m.wrapKind] || 0) + 1;
+
+    console.log(`=== Pair ${i}: ${path.basename(pair.path)} ===`);
+    console.log(`  Modules: ${pair.total} (${pair.matched} matched, ${pair.unmatched.length} unmatched)`);
+    console.log(`  Real-new (filtered): ${realNew.length}`);
+    console.log(`  Filtered as noise:   ${pair.unmatched.length - realNew.length}`);
+    if (realNew.length > 0) {
+      console.log(`  By wrapKind: ${JSON.stringify(newByWrap)}`);
+      console.log(`  Top 5 by size:`);
+      const common = new Set(["__esModule", "default", "function", "object", "string", "number", "undefined", "null", "true", "false"]);
+      for (const m of realNewSorted.slice(0, 5)) {
+        const kb = ((m.bytes || 0) / 1024).toFixed(1);
+        const sample = (m.strings || []).filter(s => s.length > 4 && !common.has(s)).slice(0, 6);
+        const sampleStr = sample.map(s => s.slice(0, 70).replace(/\n/g, "\\n")).join(" | ");
+        console.log(`    [${m.wrapKind}] mod:${m.minified_name} (${kb}KB, ${m.stmtCount} stmts)`);
+        if (sampleStr) console.log(`      strings: ${sampleStr}`);
+      }
+    }
+    console.log("");
+
+    report.pairs.push({
+      input: path.basename(pair.path),
+      total_modules: pair.total,
+      matched: pair.matched,
+      unmatched_raw: pair.unmatched.length,
+      real_new: realNew.length,
+      noise_filtered: pair.unmatched.length - realNew.length,
+      new_by_wrap_kind: newByWrap,
+      real_new_modules: realNewSorted.map(m => ({
+        id: m.id,
+        minified_name: m.minified_name,
+        wrapKind: m.wrapKind,
+        bytes: m.bytes,
+        stmtCount: m.stmtCount,
+        strings_sample: (m.strings || []).slice(0, 20),
+      })),
+    });
+  });
+
+  if (outputPath) {
+    fs.writeFileSync(path.resolve(outputPath), JSON.stringify(report, null, 2));
+    console.log(`Wrote: ${outputPath}`);
   }
 
   process.exit(0);
