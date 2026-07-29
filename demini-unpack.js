@@ -11,8 +11,8 @@
  *   1. Scan binary for `// @bun` markers (entry points of embedded bundles)
  *   2. For each marker, walk forward to find bundle end via text-density
  *      analysis with tolerance for short embedded gaps
- *   3. Score bundles by size + structural signal (IIFE wrapper, bytecode/sentinel
- *      strings, function density)
+ *   3. Score bundles by size + structural signal (IIFE wrapper, bytecode flag,
+ *      function/var density, require() calls)
  *   4. Extract the highest-scoring bundle (or all bundles with --all)
  *   5. By default, unwrap the outer CommonJS IIFE wrapper if present
  *      (`(function(exports, require, module, __filename, __dirname) {...})`)
