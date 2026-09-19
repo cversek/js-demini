@@ -294,6 +294,10 @@ console.log(`AST fingerprints: ${bkgModules.filter(m => m.ast_fingerprint).lengt
 let bundler = "unknown";
 if (classifyStats && classifyStats.bundler) {
   bundler = classifyStats.bundler;
+} else if (code.includes("/$bunfs/root/") || /\/\/\s*@bun\b/.test(code)) {
+  // Bun single-file-executable packaging (bunfs vfs chunks), matching the
+  // classify-stage detector — used when extract runs without a classify sidecar.
+  bundler = "bun";
 } else {
   // Heuristic from runtime helpers
   const runtimeMod = bkgModules.find(m => m.wrapKind === "RUNTIME");
