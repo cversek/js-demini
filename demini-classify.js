@@ -130,7 +130,7 @@ console.log("");
 
 /**
  * Detect the bundler that produced this bundle from structural signatures.
- * Returns an object: { bundler: "esbuild"|"unknown", confidence: "high"|"medium"|"low", signals: string[] }
+ * Returns an object: { bundler: "esbuild"|"bun"|"unknown", confidence: "high"|"medium"|"low", signals: string[] }
  *
  * esbuild detection signals (by AST shape, not name — per D3):
  *   - __commonJS helper: higher-order arrow (a,b) => () => (...exports...)
@@ -165,6 +165,22 @@ function detectBundleType(ast, code, runtimeHelpers) {
   // Check for createRequire banner (ESM format esbuild bundles)
   if (code.includes("createRequire") && code.includes("import.meta.url")) {
     signals.push("createRequire(import.meta.url) banner");
+  }
+
+  // Bun single-file-executable packaging (bunfs virtual-filesystem chunks).
+  // Bun's chunks are esbuild-produced internally, so esbuild `signals` above may
+  // also fire — but the bunfs markers identify the *packaging*, which is what a
+  // consumer splitting/extracting a Bun SEA needs to know. Checked before the
+  // esbuild verdict so a Bun chunk is labelled as Bun, with esbuild signals kept.
+  const bunSignals = [];
+  if (/\/\/\s*@bun\b/.test(code)) bunSignals.push("// @bun marker");
+  if (code.includes("/$bunfs/root/")) bunSignals.push("/$bunfs/root/ vfs import specifier");
+  if (bunSignals.length > 0) {
+    return {
+      bundler: "bun",
+      confidence: bunSignals.length >= 2 ? "high" : "medium",
+      signals: [...bunSignals, ...signals],
+    };
   }
 
   // Determine bundler
