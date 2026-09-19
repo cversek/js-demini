@@ -158,7 +158,7 @@ function runStage(stage, inputFile, outputDir) {
 
   const startTime = Date.now();
   try {
-    const stdout = execFileSync("node", stageArgs, {
+    const stdout = execFileSync(process.execPath, stageArgs, {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
       cwd: path.dirname(inputFile),
@@ -333,14 +333,24 @@ function main() {
     if (lastStageOutput && fs.existsSync(lastStageOutput)) {
       console.log();
       console.log(`  Verifying behavioral equivalence...`);
-      try {
-        execFileSync("node", ["--check", lastStageOutput], {
-          encoding: "utf8",
-          stdio: "pipe",
-        });
-        console.log(`  ✓ Syntax check passed: ${path.basename(lastStageOutput)}`);
-      } catch {
-        console.log(`  ⚠ Syntax check failed (may still run correctly)`);
+      const isNodeRuntime = path
+        .basename(process.execPath)
+        .toLowerCase()
+        .includes("node");
+      if (isNodeRuntime) {
+        try {
+          execFileSync(process.execPath, ["--check", lastStageOutput], {
+            encoding: "utf8",
+            stdio: "pipe",
+          });
+          console.log(`  ✓ Syntax check passed: ${path.basename(lastStageOutput)}`);
+        } catch {
+          console.log(`  ⚠ Syntax check failed (may still run correctly)`);
+        }
+      } else {
+        console.log(
+          `  – Syntax check skipped (${path.basename(process.execPath)} has no --check equivalent)`,
+        );
       }
     }
   }
