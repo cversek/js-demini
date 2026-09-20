@@ -243,11 +243,25 @@ function scoreBundle(buf, start, end) {
   const size = end - start;
   if (size < 1024) return { score: 0, size, signals: {} };
   const head = buf.slice(start, Math.min(end, start + 4096)).toString("utf8");
-  const sample = buf.slice(start, Math.min(end, start + 200_000)).toString("utf8");
+  const sampleBytes = buf.slice(start, Math.min(end, start + 200_000));
+  const sample = sampleBytes.toString("utf8");
+  // A `@bytecode` / `@bun-cjs` comment is a Bun BUILD DIRECTIVE, not proof that
+  // the payload is bytecode. Decide from the bytes: serialized bytecode is
+  // largely non-text, whereas an embedded source module is almost all text.
+  let printable = 0;
+  for (let i = 0; i < sampleBytes.length; i++) {
+    const c = sampleBytes[i];
+    if (c === 9 || c === 10 || c === 13 || (c >= 32 && c <= 126)) printable++;
+  }
+  const text_ratio = sampleBytes.length ? printable / sampleBytes.length : 0;
+  const bytecode_directive = /@bytecode|@bun-cjs/.test(head.slice(0, 200));
   const signals = {
     size,
     iife_wrapper: /\(function\s*\(exports\s*,\s*require\s*,\s*module/.test(head),
-    bytecode_flag: /@bytecode|@bun-cjs/.test(head.slice(0, 200)),
+    bytecode_directive,
+    // True only when the payload is actually non-text — not merely marked.
+    bytecode_flag: bytecode_directive && text_ratio < 0.5,
+    text_ratio: Math.round(text_ratio * 1000) / 1000,
     function_density: (sample.match(/\bfunction\s/g) || []).length,
     var_density: (sample.match(/\bvar\s/g) || []).length,
     require_calls: (sample.match(/\brequire\(/g) || []).length,
@@ -424,7 +438,9 @@ const sidecar = {
     size_bytes: b.size,
     score: Math.round(b.score),
     iife_wrapper: b.iife_wrapper,
+    bytecode_directive: b.bytecode_directive,
     bytecode_flag: b.bytecode_flag,
+    text_ratio: b.text_ratio,
     function_density: b.function_density,
     var_density: b.var_density,
     require_calls: b.require_calls,
