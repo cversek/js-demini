@@ -48,6 +48,7 @@ let positional = [];
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === "--all") mode = "all";
+  else if (a === "--split-modules") mode = "split";
   else if (a === "--info") mode = "info";
   else if (a === "--raw") unwrap = false;
   else if (a === "--bundle-index") {
@@ -74,6 +75,7 @@ function printHelp() {
   console.error("Modes:");
   console.error("  default        Extract the highest-scoring bundle (largest + most signals)");
   console.error("  --all          Extract every detected bundle");
+  console.error("  --split-modules  Multi-chunk layout: write one file per embedded module (bunfs vfs)");
   console.error("  --bundle-index Extract a specific bundle by 0-based index (sorted by offset)");
   console.error("  --info         Report findings without writing files");
   console.error("  --raw          Preserve outer CJS IIFE wrapper (default: strip if present)");
@@ -304,6 +306,80 @@ console.log("");
 
 if (mode === "info") {
   console.log("(--info mode: no files written)");
+  process.exit(0);
+}
+
+// --- Split-modules mode (multi-chunk bunfs layout) ---
+//
+// Newer Bun single-file executables embed a virtual filesystem of many small
+// ES-module chunks rather than one monolithic bundle. Each `// @bun` marker is
+// a module boundary; the default single-bundle extraction would walk across all
+// of them and concatenate them into one file that is not a valid module. This
+// mode instead writes one file per module, so the standard pipeline can consume
+// them individually. Each embedded module is followed by NUL alignment padding,
+// which is stripped here (a stray NUL otherwise breaks a downstream parser).
+if (mode === "split") {
+  const splitBasename = path.basename(resolvedInput).replace(/\.[^.]+$/, "");
+  const modulesDir = path.join(outputDir, `modules-${splitBasename}`);
+  fs.mkdirSync(modulesDir, { recursive: true });
+  // Segment on the module markers themselves — NOT on `bundles`, whose ends come
+  // from findBundleEnd()'s text-density walk and overshoot past the next marker
+  // (concatenating several modules). Each module runs from one marker to the next.
+  const pad = String(markerOffsets.length).length;
+  const manifest = [];
+  let written = 0, skippedBinary = 0;
+  for (let i = 0; i < markerOffsets.length; i++) {
+    const segStart = markerOffsets[i];
+    const segEnd = i + 1 < markerOffsets.length ? markerOffsets[i + 1] : binaryBuf.length;
+    const raw = binaryBuf.subarray(segStart, segEnd);
+    // Detect a genuinely non-text (bytecode) payload from the RAW segment before
+    // cutting: a bytecode module is a text header followed by a large binary blob.
+    const lim = Math.min(raw.length, 200_000);
+    let printable = 0;
+    for (let k = 0; k < lim; k++) {
+      const c = raw[k];
+      if (c === 9 || c === 10 || c === 13 || (c >= 32 && c <= 126)) printable++;
+    }
+    const text_ratio = lim ? Math.round((printable / lim) * 1000) / 1000 : 0;
+    // A source module is all text; the first NUL byte marks the end of the
+    // module body and the start of the inter-module separator
+    // (`\x00/$bunfs/<path>\x00`) or alignment padding. Cut there, then trim
+    // trailing whitespace. This removes both the padding and the separator.
+    let end = 0;
+    while (end < raw.length && raw[end] !== 0x00) end++;
+    while (end > 0 && (raw[end - 1] === 0x20 || raw[end - 1] === 0x0a ||
+                       raw[end - 1] === 0x0d || raw[end - 1] === 0x09)) end--;
+    const body = raw.subarray(0, end);
+    const rec = { index: i, offset: segStart, size_bytes: body.length, text_ratio };
+    if (body.length === 0) {
+      rec.written = false; rec.reason = "empty";
+    } else if (text_ratio < 0.5) {
+      rec.written = false; rec.reason = "non-text (bytecode) payload";
+      skippedBinary++;
+    } else {
+      const name = `module_${String(i).padStart(pad, "0")}.js`;
+      fs.writeFileSync(path.join(modulesDir, name), body);
+      rec.written = true; rec.file = name;
+      written++;
+    }
+    manifest.push(rec);
+  }
+  const manifestPath = path.join(outputDir, `split-modules-${splitBasename}.json`);
+  fs.writeFileSync(manifestPath, JSON.stringify({
+    tool: "demini-unpack --split-modules",
+    input: resolvedInput,
+    input_sha256: inputHash,
+    modules_total: markerOffsets.length,
+    modules_written: written,
+    modules_skipped_binary: skippedBinary,
+    modules_dir: path.basename(modulesDir),
+  }, null, 2));
+  console.log(`Split ${markerOffsets.length} module(s): ${written} written, ${skippedBinary} skipped (non-text).`);
+  console.log(`Wrote: ${modulesDir}/`);
+  console.log(`Manifest: ${manifestPath}`);
+  if (markerOffsets.length <= 1) {
+    console.log("Note: only one module found — this looks like a single-bundle executable, not a multi-chunk layout.");
+  }
   process.exit(0);
 }
 
